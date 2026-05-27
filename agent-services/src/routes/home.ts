@@ -145,7 +145,7 @@ Content-Type: application/json
   <h2><span class="num">5</span>Send the claim email</h2>
   <p>The agent invites a human to take ownership. <code>POST /agent/auth/claim</code> records the request and sends an email containing a <code>claim_attempt_token</code> URL (written to <code>agent-services/.mail/&lt;registration_id&gt;.html</code>, served at <code>/mail/&lt;registration_id&gt;.html</code>).</p>
   <label>Claiming user email
-    <input id="anon-claim-email" value="alice@service.example.com">
+    <input id="anon-claim-email" value="alice@example.com">
   </label>
   <div class="label">Request</div>
   <div class="req" id="anon-claim-req"><pre></pre></div>
@@ -187,7 +187,7 @@ Content-Type: application/json
   <h2><span class="num">9</span>Register with an email assertion</h2>
   <p>The agent already has the user's email but no provider-signed assertion. It POSTs <code>/agent/auth</code> with <code>assertion_type: verified_email</code>. The service mails the user immediately and returns a claim_token, but no credential yet.</p>
   <label>User email
-    <input id="email-assertion" value="alice@service.example.com">
+    <input id="email-assertion" value="alice@example.com">
   </label>
   <div class="label">Request</div>
   <div class="req" id="email-register-req"><pre></pre></div>

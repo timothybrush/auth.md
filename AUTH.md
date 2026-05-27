@@ -155,7 +155,7 @@ Content-Type: application/json
 {
   "type": "identity_assertion",
   "assertion_type": "verified_email",
-  "assertion": "user@service.example.com",
+  "assertion": "user@example.com",
   "requested_credential_type": "api_key"
 }
 ```
@@ -220,7 +220,7 @@ Content-Type: application/json
 
 {
   "claim_token": "clm_...",
-  "email": "user@service.example.com"
+  "email": "user@example.com"
 }
 ```
 

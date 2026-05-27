@@ -109,7 +109,7 @@ Discovery is two-hop:
   "jti": "<unique identifier for the token to prevent replay>",
   "iat": <issuance epoch seconds>,
   "exp": <iat + 5m>,
-  "email": "user@service.example.com",
+  "email": "user@example.com",
   "email_verified": true,
 
   // optional

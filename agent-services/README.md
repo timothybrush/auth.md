@@ -274,7 +274,7 @@ Request:
 {
   "type": "identity_assertion",
   "assertion_type": "verified_email",
-  "assertion": "user@service.example.com",
+  "assertion": "user@example.com",
   "requested_credential_type": "api_key"
 }
 ```
@@ -342,7 +342,7 @@ Request:
 ```json
 {
   "claim_token": "clm_abc123...",
-  "email": "user@service.example.com"
+  "email": "user@example.com"
 }
 ```
 

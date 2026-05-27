@@ -43,7 +43,7 @@ const seedTime = new Date();
 const seeded: User[] = [
   {
     id: "user_alice",
-    email: "alice@service.example.com",
+    email: "alice@example.com",
     email_verified: true,
     name: "Alice",
     auth_time: seedTime,
@@ -51,7 +51,7 @@ const seeded: User[] = [
   },
   {
     id: "user_bob",
-    email: "bob@service.example.com",
+    email: "bob@example.com",
     email_verified: true,
     name: "Bob",
     auth_time: seedTime,
