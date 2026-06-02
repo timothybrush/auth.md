@@ -13,11 +13,28 @@ export const config = Object.freeze({
   preClaimScopes: ["api.read"],
   postClaimScopes: ["api.read", "api.write"],
   accessTokenTtlSeconds: 3600,
+  /**
+   * Lifetime of service-signed identity_assertions returned by /agent/identity.
+   * Agents re-exchange the assertion at /oauth2/token to refresh access_tokens
+   * within this window; when it expires, the agent re-calls /agent/identity.
+   */
+  serviceAssertionTtlSeconds: 3600,
   anonymousTtlSeconds: 86400,
   claimViewTokenTtlSeconds: 600,
   otpTtlSeconds: 600,
   clockSkewSeconds: 60,
+  /** RFC 7523 JWT-bearer grant endpoint. */
+  tokenEndpointPath: "/oauth2/token",
+  /** RFC 7009 token revocation endpoint. */
+  revocationEndpointPath: "/oauth2/revoke",
+  /** Agent identity-assertion endpoint (profile extension). */
+  identityEndpointPath: "/agent/identity",
+  /** Claim ceremony endpoint, nested under identity. */
+  claimEndpointPath: "/agent/identity/claim",
+  /** Legacy logout-token receiver path. */
+  revocationUriPath: "/agent/auth/revoke",
   corsOrigins: [providerUrl],
   mailDir: ".mail",
   mailUrlPath: "/mail",
+  keyPath: ".keys/signing-key.json",
 });

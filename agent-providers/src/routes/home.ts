@@ -128,18 +128,12 @@ function renderHtml(seeded: { email: string; name: string }[]): string {
 </section>
 
 <section id="step-5" hidden>
-  <h2><span class="num">5</span>Exchange for credentials at consumer</h2>
-  <p>With a valid ID-JAG, the agent POSTs it to the consumer's <code>/agent/auth</code> endpoint. The consumer verifies the signature against <em>this</em> provider's JWKS and returns credentials for the matched user. Requires the consumer sample running at the audience URL.</p>
-  <label>Requested credential type
-    <select id="exchange-cred-type">
-      <option value="access_token">access_token</option>
-      <option value="api_key">api_key</option>
-    </select>
-  </label>
+  <h2><span class="num">5</span>Exchange at the consumer</h2>
+  <p>With a valid ID-JAG, the agent POSTs it to the consumer's <code>/agent/identity</code> endpoint. The consumer verifies the signature against <em>this</em> provider's JWKS and returns a service-signed <code>identity_assertion</code>. The agent then exchanges that assertion at the consumer's <code>/oauth2/token</code> (RFC 7523 JWT-bearer) for an access_token and calls <code>/api/resource</code>. Requires the consumer sample running at the audience URL.</p>
   <div class="label">Request</div>
   <div class="req" id="exchange-req"><pre></pre></div>
   <button class="primary" type="button" data-action="exchange">Exchange at consumer</button>
-  <button type="button" data-action="call-resource" id="call-resource" disabled>Call /api/resource with credential</button>
+  <button type="button" data-action="call-resource" id="call-resource" disabled>Call /api/resource with access_token</button>
   <div id="exchange-out"></div>
 </section>
 
@@ -255,19 +249,19 @@ function updateRevokePreview() {
 }
 function updateExchangePreview() {
   const aud = state.audience || document.getElementById("grant-audience").value;
-  const ct = document.getElementById("exchange-cred-type").value;
   const assertionHint = state.assertion ? state.assertion.slice(0, 40) + "..." : "eyJhbGc...";
   document.querySelector("#exchange-req pre").textContent =
-    "POST " + aud + "/agent/auth\\nContent-Type: application/json\\n\\n" + jsonStr({
+    "POST " + aud + "/agent/identity\\nContent-Type: application/json\\n\\n" + jsonStr({
       type: "identity_assertion",
       assertion_type: "urn:ietf:params:oauth:token-type:id-jag",
       assertion: assertionHint,
-      requested_credential_type: ct,
-    });
+    }) +
+    "\\n\\nthen\\n\\n" +
+    "POST " + aud + "/oauth2/token\\nContent-Type: application/x-www-form-urlencoded\\n\\n" +
+    "grant_type=urn:ietf:params:oauth:grant-type:jwt-bearer&assertion=<service-signed assertion>";
 }
 document.querySelectorAll("#step-2 input, #step-2 select").forEach((el) => el.addEventListener("input", updateGrantPreview));
 document.querySelectorAll("#step-3 input").forEach((el) => el.addEventListener("input", updateMintPreview));
-document.getElementById("exchange-cred-type").addEventListener("change", updateExchangePreview);
 updateGrantPreview();
 updateMintPreview();
 updateRevokePreview();
@@ -367,23 +361,21 @@ async function verify() {
 }
 
 async function exchange() {
-  const ct = document.getElementById("exchange-cred-type").value;
-  const body = {
+  const identityBody = {
     type: "identity_assertion",
     assertion_type: "urn:ietf:params:oauth:token-type:id-jag",
     assertion: state.assertion,
-    requested_credential_type: ct,
   };
-  let r;
+  let identityRes;
   try {
-    const resp = await fetch(state.audience + "/agent/auth", {
+    const resp = await fetch(state.audience + "/agent/identity", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify(body),
+      body: JSON.stringify(identityBody),
     });
     const text = await resp.text();
     let respBody; try { respBody = text ? JSON.parse(text) : ""; } catch { respBody = text; }
-    r = { status: resp.status, ok: resp.ok, body: respBody };
+    identityRes = { status: resp.status, ok: resp.ok, body: respBody };
   } catch (err) {
     document.getElementById("exchange-out").innerHTML =
       '<div class="label">fetch → FAIL</div>' +
@@ -392,10 +384,41 @@ async function exchange() {
       escapeHtml(err.message || String(err)) + '</pre></div>';
     return;
   }
-  document.getElementById("exchange-out").innerHTML = resBlock(r.status, r.body, r.ok);
-  if (!r.ok) return;
-  state.credential = r.body.access_token || r.body.api_key;
-  state.credentialType = r.body.type;
+  let html =
+    '<div class="label">POST /agent/identity → ' + identityRes.status + '</div>' +
+    '<div class="' + (identityRes.ok ? 'res' : 'res error') + '"><pre>' +
+    escapeHtml(jsonStr(identityRes.body)) + '</pre></div>';
+  document.getElementById("exchange-out").innerHTML = html;
+  if (!identityRes.ok) return;
+  state.serviceAssertion = identityRes.body.identity_assertion;
+
+  /* Now exchange the service-signed identity_assertion at /oauth2/token. */
+  const tokenParams = new URLSearchParams({
+    grant_type: "urn:ietf:params:oauth:grant-type:jwt-bearer",
+    assertion: state.serviceAssertion,
+  });
+  let tokenRes;
+  try {
+    const resp = await fetch(state.audience + "/oauth2/token", {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: tokenParams.toString(),
+    });
+    const text = await resp.text();
+    let respBody; try { respBody = text ? JSON.parse(text) : ""; } catch { respBody = text; }
+    tokenRes = { status: resp.status, ok: resp.ok, body: respBody };
+  } catch (err) {
+    document.getElementById("exchange-out").innerHTML +=
+      '<div class="label">POST /oauth2/token → FAIL</div>' +
+      '<div class="res error"><pre>' + escapeHtml(err.message || String(err)) + '</pre></div>';
+    return;
+  }
+  document.getElementById("exchange-out").innerHTML +=
+    '<div class="label">POST /oauth2/token → ' + tokenRes.status + '</div>' +
+    '<div class="' + (tokenRes.ok ? 'res' : 'res error') + '"><pre>' +
+    escapeHtml(jsonStr(tokenRes.body)) + '</pre></div>';
+  if (!tokenRes.ok) return;
+  state.credential = tokenRes.body.access_token;
   document.getElementById("call-resource").disabled = !state.credential;
   markDone("step-5");
   reveal("step-6");

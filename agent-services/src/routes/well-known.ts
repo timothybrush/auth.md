@@ -22,21 +22,23 @@ wellKnownRouter.get("/.well-known/oauth-authorization-server", (_req, res) => {
     authorization_servers: [config.baseUrl],
     scopes_supported: config.scopesSupported,
     bearer_methods_supported: ["header"],
+
+    issuer: config.baseUrl,
+    token_endpoint: `${config.baseUrl}${config.tokenEndpointPath}`,
+    revocation_endpoint: `${config.baseUrl}${config.revocationEndpointPath}`,
+    grant_types_supported: ["urn:ietf:params:oauth:grant-type:jwt-bearer"],
+
     agent_auth: {
       skill: `${config.baseUrl}/auth.md`,
-      register_uri: `${config.baseUrl}/agent/auth`,
-      claim_uri: `${config.baseUrl}/agent/auth/claim`,
-      revocation_uri: `${config.baseUrl}/agent/auth/revoke`,
+      identity_endpoint: `${config.baseUrl}${config.identityEndpointPath}`,
+      claim_endpoint: `${config.baseUrl}${config.claimEndpointPath}`,
+      revocation_uri: `${config.baseUrl}${config.revocationUriPath}`,
       identity_types_supported: ["anonymous", "identity_assertion"],
-      anonymous: {
-        credential_types_supported: ["api_key"],
-      },
       identity_assertion: {
         assertion_types_supported: [
           "urn:ietf:params:oauth:token-type:id-jag",
           "verified_email",
         ],
-        credential_types_supported: ["access_token", "api_key"],
       },
       events_supported: [
         "https://schemas.workos.com/events/agent/auth/identity/assertion/revoked",
