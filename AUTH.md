@@ -312,7 +312,7 @@ Authorization: Bearer <access_token>
 
 **Refresh.** When the access_token expires (`expires_in` seconds after issuance), re-call [Step 5](#step-5--exchange-the-assertion) with the same `identity_assertion`. When the identity assertion itself expires or `/oauth2/token` returns `invalid_grant`, restart at [Step 3](#step-3--register). There is no OAuth refresh_token in this flow — the two-step pattern replaces it.
 
-If you get a 401 on a previously-working access_token: try [Step 5](#step-5--exchange-the-assertion) once with the current assertion. If that also fails, drop everything and restart at [Step 1](#step-1--discover).
+If you get a 401 on a previously-working access_token: try [Step 5](#step-5--exchange-the-assertion) once with the current assertion. If that also fails, discard the expired identity assertion, and restart at [Step 1](#step-1--discover).
 
 Full API reference: `https://docs.service.example.com/`.
 
