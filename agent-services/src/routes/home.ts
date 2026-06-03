@@ -9,7 +9,7 @@ homeRouter.get("/", (_req, res) => {
 });
 
 function renderHtml(): string {
-  const providerHint = config.trustedIssuers[0] ?? "http://localhost:4000";
+  const providerHint = config.trustedIssuers[0]?.iss ?? "http://localhost:4000";
   return `<!doctype html>
 <html lang="en">
 <head>

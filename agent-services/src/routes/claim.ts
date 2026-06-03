@@ -10,6 +10,7 @@ import {
   sha256Hex,
   users,
 } from "../store.js";
+import { trustedIssuerDisplayName } from "../trust.js";
 
 /*
  * User-facing claim form. Cookie-gated by /login. The agent never reaches
@@ -91,12 +92,36 @@ claimRouter.get("/claim", (req, res) => {
   res.type("html").send(
     renderClaimPage({
       status: "form",
-      title: "Confirm the code from your agent",
-      message: `You're signed in as <code>${escapeHtml(user.email)}</code>. The agent should have shown you a 6-digit code — enter it below to authorize it to act on your behalf.`,
+      ...promptCopy(registration, user),
       claimAttemptToken: token,
     }),
   );
 });
+
+/**
+ * Wording for the claim form. ID-JAG step-up registrations name the
+ * provider being linked ("Cursor is asking to link this account…");
+ * anonymous and verified-email use generic copy. Provider name comes from
+ * the service's trust list, not from anywhere the provider controls
+ * directly (in production this would typically resolve via CIMD with the
+ * service still gating which client_name values it renders).
+ */
+function promptCopy(
+  registration: Registration,
+  user: User,
+): { title: string; message: string } {
+  if (registration.kind === "id_jag" && registration.id_jag) {
+    const provider = trustedIssuerDisplayName(registration.id_jag.iss);
+    return {
+      title: `Link ${escapeHtml(provider)} to your account?`,
+      message: `You're signed in as <code>${escapeHtml(user.email)}</code>. <strong>${escapeHtml(provider)}</strong> is asking to link this account so an agent running there can act on your behalf. Enter the 6-digit code your agent showed you to confirm.`,
+    };
+  }
+  return {
+    title: "Confirm the code from your agent",
+    message: `You're signed in as <code>${escapeHtml(user.email)}</code>. The agent should have shown you a 6-digit code — enter it below to authorize it to act on your behalf.`,
+  };
+}
 
 /*
  * Form-action endpoint. Same path the agent used to call in the old flow,
@@ -156,8 +181,7 @@ claimRouter.post(`${config.claimEndpointPath}/complete`, (req, res) => {
       .send(
         renderClaimPage({
           status: "form-error",
-          title: "Confirm the code from your agent",
-          message: `You're signed in as <code>${escapeHtml(user.email)}</code>. Enter the 6-digit code your agent gave you.`,
+          ...promptCopy(registration, user),
           claimAttemptToken: parsed.value.claim_attempt_token,
           error: humanError(result.error),
         }),

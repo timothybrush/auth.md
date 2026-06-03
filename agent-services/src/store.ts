@@ -360,36 +360,126 @@ function idJagRegistrationKey(iss: string, sub: string, aud: string): string {
 }
 
 /**
- * ID-JAG clean match: the matcher found an existing delegation or JIT-
- * provisioned a fresh user. No claim ceremony required. Returns an existing
- * registration for the same (iss, sub, aud) if one is already on file —
- * keeps the registration_id stable across repeated ID-JAG presentations
- * from the same provider/user pair.
+ * Resolve an ID-JAG against the registration store. Always keyed on the
+ * (iss, sub, aud) triple — the same triple maps to the same registration
+ * row whether or not the user has confirmed yet.
+ *
+ * Context discriminates the two paths the matcher arrives via:
+ *  - `{ user }` — the matcher resolved the ID-JAG to a known user (existing
+ *    delegation or JIT-provisioned). No ceremony; mark claimed.
+ *  - `{ email }` — the matcher found an account matching the ID-JAG's
+ *    verified email/phone but no delegation yet. The user must confirm via
+ *    the same user_code ceremony email-verification uses. Returns the
+ *    ceremony plaintexts so the route can surface them to the agent.
+ *
+ * On step-up retry (second presentation while a ceremony is in flight),
+ * the existing pending registration is re-issued with a fresh ceremony —
+ * old claim_attempt_token + user_code stop working. Mirrors anonymous
+ * /agent/identity/claim's same-email retry behavior.
  */
+export type IdJagContext = { user: User } | { email: string };
+
+export type FindOrCreateIdJagResult =
+  | { kind: "ready"; registration: Registration }
+  | {
+      kind: "step_up";
+      registration: Registration;
+      claimTokenPlaintext: string;
+      claimViewTokenPlaintext: string;
+      userCode: string;
+      userCodeExpiresAt: Date;
+    };
+
 export function findOrCreateIdJagRegistration(input: {
   iss: string;
   sub: string;
   aud: string;
-  userId: string;
-}): Registration {
+  context: IdJagContext;
+}): FindOrCreateIdJagResult {
   const id = idJagRegistrationKey(input.iss, input.sub, input.aud);
   const existing = registrations.get(id);
-  if (existing) {
-    /* Keep the user binding current in case of JIT-provision races. */
-    existing.user_id = input.userId;
-    return existing;
-  }
   const now = new Date();
+
+  if ("user" in input.context) {
+    /* Clean match — known user. Create or refresh the binding. */
+    if (existing) {
+      existing.user_id = input.context.user.id;
+      if (!existing.claimed_at) existing.claimed_at = now;
+      return { kind: "ready", registration: existing };
+    }
+    const registration = new Registration({
+      id,
+      kind: "id_jag",
+      user_id: input.context.user.id,
+      created_at: now,
+      claimed_at: now,
+      id_jag: { iss: input.iss, sub: input.sub, aud: input.aud },
+    });
+    registrations.set(registration.id, registration);
+    return { kind: "ready", registration };
+  }
+
+  /* Step-up — user must confirm via ceremony. */
+  if (existing && existing.status === "claimed") {
+    /*
+     * Race: someone completed the ceremony between the matcher running
+     * and us getting here, or a prior step-up landed before this one.
+     * Either way, it's a clean match now.
+     */
+    return { kind: "ready", registration: existing };
+  }
+
+  const claimTokenPlaintext = `clm_${randomBytes(19).toString("base64url")}`;
+  const claimViewTokenPlaintext = `cvt_${randomBytes(24).toString("base64url")}`;
+  const code = mintUserCode(now);
+  const claim = {
+    token_hash: sha256Hex(claimTokenPlaintext),
+    email: input.context.email,
+    expires_at: new Date(now.getTime() + config.anonymousTtlSeconds * 1000),
+    attempt: {
+      id: `cla_${randomBytes(16).toString("base64url")}`,
+      view_token_hash: sha256Hex(claimViewTokenPlaintext),
+      view_expires_at: new Date(
+        now.getTime() + config.claimViewTokenTtlSeconds * 1000,
+      ),
+      user_code_hash: code.hash,
+      user_code_generated_at: now,
+      user_code_expires_at: code.expiresAt,
+    },
+  };
+
+  if (existing) {
+    /*
+     * Pending step-up exists — re-issue ceremony. Prior URL/code stop
+     * working; the agent surfaces the new ones to the user.
+     */
+    existing.claim = claim;
+    return {
+      kind: "step_up",
+      registration: existing,
+      claimTokenPlaintext,
+      claimViewTokenPlaintext,
+      userCode: code.plaintext,
+      userCodeExpiresAt: code.expiresAt,
+    };
+  }
+
   const registration = new Registration({
     id,
     kind: "id_jag",
-    user_id: input.userId,
     created_at: now,
-    claimed_at: now,
+    claim,
     id_jag: { iss: input.iss, sub: input.sub, aud: input.aud },
   });
   registrations.set(registration.id, registration);
-  return registration;
+  return {
+    kind: "step_up",
+    registration,
+    claimTokenPlaintext,
+    claimViewTokenPlaintext,
+    userCode: code.plaintext,
+    userCodeExpiresAt: code.expiresAt,
+  };
 }
 
 export function findRegistrationById(id: string): Registration | undefined {
@@ -522,6 +612,18 @@ export function completeClaim(
         cred.revoked = true;
       }
     }
+  }
+
+  if (registration.kind === "id_jag" && registration.id_jag) {
+    /*
+     * Step-up complete: bind the (iss, sub) → user delegation so future
+     * ID-JAGs from this provider for this sub take the clean-match path.
+     */
+    upsertDelegation(
+      registration.id_jag.iss,
+      registration.id_jag.sub,
+      signedInUser.id,
+    );
   }
 
   return { ok: true, registration, user: signedInUser };

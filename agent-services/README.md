@@ -208,11 +208,11 @@ Implementation steps:
 2. **Look up the issuer (`iss`)** in your trusted providers list. Reject if unknown.
 3. **Fetch JWKS** from the provider (see [Verifying ID-JAGs](#verifying-id-jags) for caching).
 4. **Verify the signature** using the key matching `kid`.
-5. **Validate claims:** `aud` matches your auth server; `exp` is future; `iat` is not unreasonably future; `jti` has not been seen recently; `client_id` resolves to a known provider identity; at least one of `email_verified` or `phone_number_verified` is `true`.
-6. **Match or provision the user** (see [User Matching and JIT Provisioning](#user-matching-and-jit-provisioning)).
+5. **Validate claims:** `aud` matches your auth server; `exp` is future; `iat` is not unreasonably future; `jti` has not been seen recently; `client_id` resolves to a known provider identity; at least one of `email_verified` or `phone_number_verified` is `true`; **`auth_time` is present and within `idJagMaxAuthAgeSeconds`** (see [auth_time freshness](#auth_time-freshness) below).
+6. **Match or provision the user** (see [User Matching and JIT Provisioning](#user-matching-and-jit-provisioning)). If the match resolves to an existing user via email/phone but no `(iss, sub)` delegation exists yet, step up (see [First-link step-up](#first-link-step-up) below) — do **not** silently bind.
 7. **Mint a service-signed identity_assertion** (typed `oauth-id-jag+jwt`, signed by your AS key, with `sub` = the registration ID). This is what the agent will exchange at `/oauth2/token`.
 
-Successful response:
+Clean-match response:
 
 ```json
 {
@@ -224,15 +224,62 @@ Successful response:
 }
 ```
 
-The agent then POSTs the `identity_assertion` to [`/oauth2/token`](#post-oauth2token--rfc-7523-jwt-bearer-grant) to obtain an access_token. No credential is issued at `/agent/identity` itself.
+The agent then POSTs the `identity_assertion` to [`/oauth2/token`](#post-oauth2token) to obtain an access_token. No credential is issued at `/agent/identity` itself.
 
-Error response (400):
+Error response (400 except where noted):
 
 ```json
 { "error": "invalid_audience", "message": "..." }
 ```
 
-Supported error codes: `invalid_issuer`, `invalid_signature`, `expired`, `replay_detected`, `invalid_audience`, `invalid_client_id`, `missing_verified_email`.
+Supported error codes: `invalid_issuer`, `invalid_signature`, `expired`, `replay_detected`, `invalid_audience`, `invalid_client_id`, `missing_verified_email`, `auth_time_missing` and `auth_time_too_old` (mapped to **401 `login_required`** for the agent; see below), `interaction_required` (**401**, step-up required; see below).
+
+##### auth_time freshness
+
+Reject ID-JAGs whose `auth_time` is missing or older than your configured `idJagMaxAuthAgeSeconds` (default 1h) with HTTP 401 and:
+
+```http
+WWW-Authenticate: AgentAuth error="login_required", max_age="3600", error_description="..."
+```
+
+```json
+{ "error": "login_required", "error_description": "...", "max_age": 3600 }
+```
+
+The agent's recourse is to refresh the user's authentication at _its provider_ (`prompt=login` or equivalent) and mint a fresh ID-JAG. Nothing the user does at your service helps — that's why this is distinct from step-up. Apply the freshness check universally (even on `(iss, sub)` pairs you already have a delegation for) to prevent indefinite session piggy-backing.
+
+##### First-link step-up
+
+When the matcher finds an existing user by verified email/phone but no `(iss, sub)` delegation yet, do not silently bind the delegation. Return HTTP 401 with a ceremony block — the user has to confirm linking the provider identity to their account:
+
+```http
+WWW-Authenticate: AgentAuth error="interaction_required", error_description="..."
+```
+
+```json
+{
+  "error": "interaction_required",
+  "error_description": "...",
+  "registration_id": "reg_...",
+  "registration_type": "id-jag-step-up",
+  "claim_url": "/agent/identity/claim",
+  "claim_token": "clm_...",
+  "claim_token_expires": "...",
+  "post_claim_scopes": ["api.read", "api.write"],
+  "claim": {
+    "user_code": "123456",
+    "expires_in": 600,
+    "verification_uri": "...",
+    "interval": 5
+  }
+}
+```
+
+The ceremony block is the same shape as the verified-email and anonymous flows ([Claim Ceremony](#claim-ceremony)). The user-facing `/claim` page renders provider-aware copy for ID-JAG registrations ("**Acme** is asking to link this account…") — the provider display name comes from your trust list. After completion, the agent's next poll picks up the bound delegation. The same `(iss, sub, aud)` triple is keyed on a single registration row whether pending or bound, so repeat presentations during step-up reuse the row and re-issue a fresh ceremony.
+
+**Why step up.** Without it, any trusted provider could mint an ID-JAG with `email_verified: true` for `victim@example.com` and silently take over that user's account at your service. The step-up gate makes the user's signed-in session at your service the binding signal for linking external identities. In production, the trust list should also rotate provider display names through CIMD ([Client ID Metadata Document](https://datatracker.ietf.org/doc/draft-ietf-oauth-client-id-metadata-document/)) so a malicious provider can't pick its own marketing copy on your claim page.
+
+**The claim ceremony is your only policy choke-point.** The agent never authenticates the user; the agent presents an ID-JAG (which the provider authenticated, on the provider's terms) and the service authenticates the user via its existing `/login` flow during the ceremony. Whatever conditions you normally enforce in interactive browser sign-in — enterprise SSO, MFA, bot detection, terms re-acceptance, just-in-time provisioning checks — apply here, with no agent-auth-specific plumbing. If `acme.com` is enterprise-SSO-managed in your tenant, an ID-JAG asserting `alice@acme.com` from a provider Acme doesn't federate lands the user on a sign-in surface that refuses to complete until Alice authenticates through Acme's IdP. The agent observes none of this — it polls until the user finishes; from the agent's perspective the flow is identical whether the gate is "no gate," "MFA," or "full enterprise SSO." This is how ID-JAGs don't bypass your domain-bound policies.
 
 #### type: anonymous
 
@@ -375,7 +422,7 @@ The agent's `identity_assertion` is unaffected — they can immediately re-call 
 
 A compliant ID-JAG header is `{ "typ": "oauth-id-jag+jwt", "alg", "kid" }`. The body includes `iss`, `sub`, `aud`, `client_id`, `jti`, `iat`, `exp`, and identity claims like `email` / `email_verified`. See the provider guide for the full shape.
 
-**Trust list.** Maintain a registry of providers whose assertions you accept. A minimum entry is an issuer URL; richer entries pin a JWKS URI, a CIMD URL, or an attestation policy (e.g. "requires `mfa` in `amr`"). Treat this list as security-critical configuration — compromising a trusted provider means compromising every delegation routed through them.
+**Trust list.** Maintain a registry of providers whose assertions you accept. A minimum entry is an issuer URL; richer entries include a service-controlled `display_name` (rendered on the step-up confirmation page so the user sees "**Acme** is asking to link…"), a pinned JWKS URI, a CIMD URL, or an attestation policy (e.g. "requires `mfa` in `amr`"). Treat this list as security-critical configuration — compromising a trusted provider means compromising every delegation routed through them. Don't pull the display name straight from the ID-JAG or unmediated CIMD; a malicious provider would set its own copy. The service decides what shows on its own UI.
 
 **JWKS fetching.** Fetch `{iss}/.well-known/jwks.json` on first use and cache per the response's `Cache-Control`, with a sane floor (e.g., 10 minutes) and ceiling (e.g., 24 hours). On `kid` cache miss, refetch once before rejecting — this handles provider key rotation gracefully.
 
@@ -389,12 +436,11 @@ A compliant ID-JAG header is `{ "typ": "oauth-id-jag+jwt", "alg", "kid" }`. The 
 
 When an ID-JAG arrives, decide which of your users it represents. Recommended resolution order:
 
-1. **Delegation record match.** If you've previously issued credentials for this `(iss, sub)`, route to the same user. This is the strongest identifier — it's what the provider considers stable.
-2. **Verified email match.** If a user exists with the same verified email, link. Note this is _your_ verification; a provider asserting `email_verified: true` reflects their verification, which you may or may not accept as sufficient.
-3. **Verified phone match.** Same pattern.
-4. **No match → JIT.** Create a new user per your provisioning policy, or refuse with `missing_verified_email`-adjacent semantics if your product requires manual onboarding.
+1. **Delegation record match.** If you've previously issued credentials for this `(iss, sub)`, route to the same user. This is the strongest identifier — it's what the provider considers stable. Clean match.
+2. **Verified email/phone match → step-up.** If a user exists with the same verified email or phone but no `(iss, sub)` delegation, _don't bind silently_. Trigger the [first-link step-up ceremony](#first-link-step-up) — the user must confirm linking the provider identity to their account. Without this gate, any trusted provider could mint an ID-JAG asserting a victim's email and take over the victim's account.
+3. **No match → JIT.** Create a new user per your provisioning policy, or refuse if your product requires manual onboarding. Clean match.
 
-Reject ID-JAGs with neither a verified email nor a verified phone — there's no basis for matching and no channel for user-facing communications (revocation notices, claim emails, etc.).
+Reject ID-JAGs with neither a verified email nor a verified phone — there's no basis for matching.
 
 ### Claim Ceremony
 

@@ -119,6 +119,7 @@ Discovery is two-hop:
   "jti": "<unique identifier for the token to prevent replay>",
   "iat": <issuance epoch seconds>,
   "exp": <iat + 5m>,
+  "auth_time": <epoch seconds the user last authenticated at your provider>,
   "email": "user@example.com",
   "email_verified": true,
 
@@ -134,6 +135,8 @@ Discovery is two-hop:
   "agent_context_id": "<chat-id>"
 }
 ```
+
+`auth_time` is required (not optional). Consuming services enforce a max age on it — typically one hour — and reject older ID-JAGs with `401 login_required`, expecting the agent to refresh the user's session at your provider (`prompt=login` or equivalent) before minting a new one. Freshen `auth_time` whenever the user re-authenticates; don't reuse a long-lived session timestamp.
 
 ### Hosted Discovery Documents
 
@@ -214,25 +217,31 @@ If the access_token expires, the agent re-calls `/oauth2/token` with the same id
 
 Errors at `/agent/identity` describe profile-specific states; errors at `/oauth2/token` follow OAuth-standard vocabulary.
 
-| Endpoint          | Error code               | Meaning                                                                                                              |
-| ----------------- | ------------------------ | -------------------------------------------------------------------------------------------------------------------- |
-| `/agent/identity` | `invalid_issuer`         | Token `iss` isn't in the service's trusted providers list.                                                           |
-| `/agent/identity` | `invalid_signature`      | JWKS lookup failed or the signature didn't verify against any known key.                                             |
-| `/agent/identity` | `expired`                | `exp` is in the past.                                                                                                |
-| `/agent/identity` | `replay_detected`        | `jti` has already been seen within the replay window.                                                                |
-| `/agent/identity` | `invalid_audience`       | `aud` doesn't match the service's auth server.                                                                       |
-| `/agent/identity` | `invalid_client_id`      | `client_id` doesn't resolve to a known provider identity.                                                            |
-| `/agent/identity` | `missing_verified_email` | Neither `email_verified` nor `phone_number_verified` is `true`.                                                      |
-| `/agent/identity` | `invalid_request`        | Body shape, missing claims, or unverified identity (neither `email_verified` nor `phone_number_verified` is `true`). |
-| `/oauth2/token`   | `invalid_grant`          | Assertion failed verification, expired, replayed, audience-mismatched, or has been revoked.                          |
-| `/oauth2/token`   | `invalid_client`         | `client_id` doesn't resolve to a known provider identity.                                                            |
-| `/oauth2/token`   | `unsupported_grant_type` | `grant_type` is not `urn:ietf:params:oauth:grant-type:jwt-bearer`.                                                   |
+| Endpoint          | Error code                   | Meaning                                                                                                                                                                                                     |
+| ----------------- | ---------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `/agent/identity` | `invalid_issuer`             | Token `iss` isn't in the service's trusted providers list.                                                                                                                                                  |
+| `/agent/identity` | `invalid_signature`          | JWKS lookup failed or the signature didn't verify against any known key.                                                                                                                                    |
+| `/agent/identity` | `expired`                    | `exp` is in the past.                                                                                                                                                                                       |
+| `/agent/identity` | `replay_detected`            | `jti` has already been seen within the replay window.                                                                                                                                                       |
+| `/agent/identity` | `invalid_audience`           | `aud` doesn't match the service's auth server.                                                                                                                                                              |
+| `/agent/identity` | `invalid_client_id`          | `client_id` doesn't resolve to a known provider identity.                                                                                                                                                   |
+| `/agent/identity` | `missing_verified_email`     | Neither `email_verified` nor `phone_number_verified` is `true`.                                                                                                                                             |
+| `/agent/identity` | `invalid_request`            | Body shape, missing claims, or unverified identity (neither `email_verified` nor `phone_number_verified` is `true`).                                                                                        |
+| `/agent/identity` | `interaction_required` (401) | Step-up: service knows the user by email/phone but needs them to confirm linking your `(iss, sub)`. Response body carries a `claim` block — surface it to the user. Not your problem to fix; just hand off. |
+| `/agent/identity` | `login_required` (401)       | `auth_time` missing or older than the service's `max_age` (in the response). Re-authenticate the user at your end and mint a fresh ID-JAG.                                                                  |
+| `/oauth2/token`   | `invalid_grant`              | Assertion failed verification, expired, replayed, audience-mismatched, or has been revoked.                                                                                                                 |
+| `/oauth2/token`   | `invalid_client`             | `client_id` doesn't resolve to a known provider identity.                                                                                                                                                   |
+| `/oauth2/token`   | `unsupported_grant_type`     | `grant_type` is not `urn:ietf:params:oauth:grant-type:jwt-bearer`.                                                                                                                                          |
 
 ## Downstream Verification
 
-Services will maintain a list of trusted agent providers. The service will attempt to match to an existing customer, looking for matches on `(iss, sub)` and then email/phone for JIT provisioning, and will determine whether to create a new account or permit using the identity assertion to return credentials for an existing account.
+Services maintain a list of trusted agent providers. On first contact with a `(iss, sub)` pair the service has three resolutions:
 
-Services will reject ID-JAGs with neither a verified email nor a verified phone number. If the service is satisfied by the validity of the identity assertion, it will return a service-signed identity assertion the agent can then exchange at `/oauth2/token` for an access_token.
+1. **Existing delegation** — `(iss, sub)` is already bound to a user. Clean match; return a service-signed identity_assertion immediately.
+2. **JIT-provisioned** — no existing user matches the ID-JAG's verified email/phone. Service creates a new user and binds the delegation. Clean match.
+3. **Step-up required** — `(iss, sub)` is new but the verified email/phone matches an _existing_ user. The service won't silently bind the delegation; it returns a 401 `interaction_required` with a claim ceremony so the user can confirm the link.
+
+Services reject ID-JAGs with neither a verified email nor a verified phone number, and reject ID-JAGs whose `auth_time` is older than the service's `max_age` (typically 1 hour) with `401 login_required` — agents must refresh the user's authentication at the provider before retrying.
 
 ## Tracking and Revocation
 

@@ -8,7 +8,15 @@ export const config = Object.freeze({
   baseUrl,
   resource: `${baseUrl}/api/`,
   prmUrl: `${baseUrl}/.well-known/oauth-protected-resource`,
-  trustedIssuers: [providerUrl],
+  /**
+   * Trusted issuer list for ID-JAGs. The `displayName` is what users see on
+   * the step-up confirmation page ("Cursor is asking to link this account…")
+   * — service-controlled so a provider can't set its own marketing copy. In
+   * production this would typically come from CIMD (Client ID Metadata
+   * Document, RFC draft) with the service still gating which `client_name`
+   * values it renders.
+   */
+  trustedIssuers: [{ iss: providerUrl, displayName: "Agent Provider" }],
   scopesSupported: ["api.read", "api.write"],
   preClaimScopes: ["api.read"],
   postClaimScopes: ["api.read", "api.write"],
@@ -20,6 +28,13 @@ export const config = Object.freeze({
    */
   serviceAssertionTtlSeconds: 3600,
   anonymousTtlSeconds: 86400,
+  /**
+   * Maximum age of the upstream user authentication carried in an ID-JAG's
+   * auth_time claim. ID-JAGs whose underlying login is older than this are
+   * rejected with login_required; the agent should refresh the user's
+   * session at its provider and request a fresh ID-JAG.
+   */
+  idJagMaxAuthAgeSeconds: 3600,
   claimViewTokenTtlSeconds: 600,
   /** Lifetime of the user_code minted at ceremony start (RFC 8628). */
   userCodeTtlSeconds: 600,

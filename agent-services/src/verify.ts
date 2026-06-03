@@ -14,6 +14,8 @@ export type VerifyError = {
     | "invalid_audience"
     | "invalid_client_id"
     | "missing_verified_email"
+    | "auth_time_missing"
+    | "auth_time_too_old"
     | "invalid_request";
   message: string;
 };
@@ -30,6 +32,13 @@ export type IdJagClaims = JWTPayload & {
   phone_number_verified?: boolean;
   name?: string;
   amr?: string[];
+  /**
+   * Epoch seconds when the end-user authenticated at the provider. Required
+   * — ID-JAGs missing it are rejected with `auth_time_missing`. The service
+   * rejects ID-JAGs whose auth is older than `config.idJagMaxAuthAgeSeconds`
+   * with `auth_time_too_old`, telling the agent to refresh upstream.
+   */
+  auth_time?: number;
   agent_platform?: string;
   agent_context_id?: string;
 };
@@ -130,6 +139,34 @@ export async function verifyIdJag(
       error: {
         code: "missing_verified_email",
         message: "ID-JAG must include a verified email or phone number.",
+      },
+    };
+  }
+
+  /*
+   * Freshness-of-authentication check. A token with an old auth_time means
+   * the user logged in at the provider long ago, even if the token itself
+   * was minted recently. Reject so the agent refreshes upstream rather than
+   * riding a stale session. Applied universally — even (iss, sub)
+   * delegations the service already trusts require periodic re-auth.
+   */
+  if (typeof claims.auth_time !== "number") {
+    return {
+      ok: false,
+      error: {
+        code: "auth_time_missing",
+        message: "ID-JAG must include an auth_time claim.",
+      },
+    };
+  }
+  const nowSec = Math.floor(Date.now() / 1000);
+  const authAge = nowSec - claims.auth_time;
+  if (authAge > config.idJagMaxAuthAgeSeconds + config.clockSkewSeconds) {
+    return {
+      ok: false,
+      error: {
+        code: "auth_time_too_old",
+        message: `auth_time is ${authAge}s old; max allowed is ${config.idJagMaxAuthAgeSeconds}s. Re-authenticate at the provider and request a fresh ID-JAG.`,
       },
     };
   }

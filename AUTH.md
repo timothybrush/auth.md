@@ -125,6 +125,7 @@ Mint the assertion with:
 - `email_verified: true` OR `phone_number_verified: true`
 - Fresh `jti`
 - Near-term `exp` (~5 minutes)
+- `auth_time` — epoch seconds when the user last authenticated at your provider. **Required.** The service rejects ID-JAGs whose underlying user authentication is older than its `idJagMaxAuthAgeSeconds` window.
 
 ```http
 POST /agent/identity
@@ -137,7 +138,9 @@ Content-Type: application/json
 }
 ```
 
-Response (200):
+The response has two shapes depending on whether the service already has a delegation on file for `(iss, sub)`.
+
+**Clean match** — `(iss, sub)` is known, or the service JIT-provisioned a fresh user (no email/phone collision with existing accounts):
 
 ```json
 {
@@ -150,6 +153,47 @@ Response (200):
 ```
 
 Keep `identity_assertion` and go to [Step 5](#step-5--exchange-the-assertion).
+
+**Step-up required (401)** — `(iss, sub)` is unknown but the ID-JAG's verified email or phone matched an existing account at the service. The service won't silently bind the delegation — the user has to confirm linking the provider identity to their account.
+
+```http
+HTTP/1.1 401 Unauthorized
+WWW-Authenticate: AgentAuth error="interaction_required", error_description="…"
+
+{
+  "error": "interaction_required",
+  "error_description": "…",
+  "registration_id": "reg_...",
+  "registration_type": "id-jag-step-up",
+  "claim_url": "https://auth.service.example.com/agent/identity/claim",
+  "claim_token": "clm_...",
+  "claim_token_expires": "…",
+  "post_claim_scopes": ["api.read", "api.write"],
+  "claim": {
+    "user_code": "123456",
+    "expires_in": 600,
+    "verification_uri": "https://auth.service.example.com/login?return_to=%2Fclaim%3Fclaim_attempt_token%3D...",
+    "interval": 5
+  }
+}
+```
+
+Same ceremony block as email-verification — the user signs in to the service, sees a confirmation page that names your provider ("**Acme Provider** is asking to link this account so the agent it runs can act on your behalf"), and types the `user_code` to confirm. Surface `verification_uri` + `user_code` to the user (see [Step 4b](#4b-hand-off-to-the-user)) and poll the token endpoint (see [Step 4c](#4c-poll-for-completion)).
+
+After the user confirms, the next presentation of an ID-JAG for the same `(iss, sub, aud)` hits the clean-match path.
+
+**Login required (401)** — `auth_time` is missing or older than the service's max-age. The agent has to go back to its own provider, get the user to re-authenticate there (e.g., `prompt=login` on the provider's auth endpoint), and re-mint a fresh ID-JAG. This is distinct from step-up: nothing the user does at the service helps; the freshness has to be established upstream.
+
+```http
+HTTP/1.1 401 Unauthorized
+WWW-Authenticate: AgentAuth error="login_required", max_age="3600", error_description="…"
+
+{
+  "error": "login_required",
+  "error_description": "auth_time is …s old; max allowed is 3600s. Re-authenticate at the provider and request a fresh ID-JAG.",
+  "max_age": 3600
+}
+```
 
 ### identity_assertion + email
 
@@ -365,22 +409,24 @@ Full API reference: `https://docs.service.example.com/`.
 
 Errors at `/agent/identity` and `/agent/identity/claim/*` use profile-specific codes (the registration ceremonies have no OAuth analog). Errors at `/oauth2/token` use OAuth-standard vocabulary per [RFC 6749](https://datatracker.ietf.org/doc/html/rfc6749) / [RFC 7523](https://datatracker.ietf.org/doc/html/rfc7523).
 
-| Code                         | Where                            | What to do                                                                                                                                                                             |
-| ---------------------------- | -------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `anonymous_not_enabled`      | `/agent/identity`                | This service doesn't accept anonymous. Pick another method from Step 2.                                                                                                                |
-| `verified_email_not_enabled` | `/agent/identity`                | Email verification disabled here. Pick another method.                                                                                                                                 |
-| `issuer_not_enabled`         | `/agent/identity`                | Provider not on this service's trust list. Pick another method.                                                                                                                        |
-| `invalid_request`            | `/agent/identity`                | Body shape, missing claims, ID-JAG signature/`jti`/`aud` problems, or unverified identity. Fix the input (mint a fresh ID-JAG if signature/`jti`/`aud`/`exp`-related).                 |
-| `invalid_claim_token`        | `/agent/identity/claim`, `/view` | `claim_token` wrong or expired. Restart at Step 3.                                                                                                                                     |
-| `claimed_or_in_flight`       | `/agent/identity/claim`          | Wrong endpoint for this registration kind, or already claimed. Re-read the Step 3 response and follow Step 4.                                                                          |
-| `claim_expired`              | `/agent/identity/claim`          | The registration expired before the user finished. Restart at Step 3.                                                                                                                  |
-| `invalid_grant`              | `/oauth2/token`                  | Assertion expired, revoked, replayed, or otherwise failed verification. Restart at [Step 3](#step-3--register) to mint a fresh one.                                                    |
-| `invalid_client`             | `/oauth2/token`                  | `client_id` not recognized. Re-read AS metadata.                                                                                                                                       |
-| `unsupported_grant_type`     | `/oauth2/token`                  | `grant_type` is not one of the two supported values (`urn:ietf:params:oauth:grant-type:jwt-bearer` for token exchange, `urn:workos:agent-auth:grant-type:claim` for ceremony polling). |
-| `authorization_pending`      | `/oauth2/token` (claim grant)    | User hasn't completed the ceremony yet. Honor `interval` from the ceremony block and retry.                                                                                               |
-| `expired_token`              | `/oauth2/token` (claim grant)    | `user_code` window or outer claim window has closed. Re-call `/agent/identity/claim` to mint a fresh user_code; if that returns `claim_expired`, restart at Step 3.                    |
-| `slow_down`                  | `/oauth2/token` (claim grant)    | Polling too fast. Add at least 5s to your `interval` and retry.                                                                                                                        |
-| `rate_limited` (429)         | any                              | Back off and retry.                                                                                                                                                                    |
+| Code                         | Where                         | What to do                                                                                                                                                                             |
+| ---------------------------- | ----------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `anonymous_not_enabled`      | `/agent/identity`             | This service doesn't accept anonymous. Pick another method from Step 2.                                                                                                                |
+| `verified_email_not_enabled` | `/agent/identity`             | Email verification disabled here. Pick another method.                                                                                                                                 |
+| `issuer_not_enabled`         | `/agent/identity`             | Provider not on this service's trust list. Pick another method.                                                                                                                        |
+| `invalid_request`            | `/agent/identity`             | Body shape, missing claims, ID-JAG signature/`jti`/`aud` problems, or unverified identity. Fix the input (mint a fresh ID-JAG if signature/`jti`/`aud`/`exp`-related).                 |
+| `interaction_required` (401) | `/agent/identity` (ID-JAG)    | Step-up: ID-JAG matched an existing account but no `(iss, sub)` delegation yet. Body carries a `claim` block; surface it to the user (see [Step 4](#step-4--claim-ceremony)).          |
+| `login_required` (401)       | `/agent/identity` (ID-JAG)    | `auth_time` missing or older than `max_age`. Re-authenticate the user at your provider (`prompt=login` or equivalent) and mint a fresh ID-JAG. The service can't help here.            |
+| `invalid_claim_token`        | `/agent/identity/claim`       | `claim_token` wrong or expired. Restart at Step 3.                                                                                                                                     |
+| `claimed_or_in_flight`       | `/agent/identity/claim`       | Wrong endpoint for this registration kind, or already claimed. Re-read the Step 3 response and follow Step 4.                                                                          |
+| `claim_expired`              | `/agent/identity/claim`       | The registration expired before the user finished. Restart at Step 3.                                                                                                                  |
+| `invalid_grant`              | `/oauth2/token`               | Assertion expired, revoked, replayed, or otherwise failed verification. Restart at [Step 3](#step-3--register) to mint a fresh one.                                                    |
+| `invalid_client`             | `/oauth2/token`               | `client_id` not recognized. Re-read AS metadata.                                                                                                                                       |
+| `unsupported_grant_type`     | `/oauth2/token`               | `grant_type` is not one of the two supported values (`urn:ietf:params:oauth:grant-type:jwt-bearer` for token exchange, `urn:workos:agent-auth:grant-type:claim` for ceremony polling). |
+| `authorization_pending`      | `/oauth2/token` (claim grant) | User hasn't completed the ceremony yet. Honor `interval` from the ceremony block; retry.                                                                                               |
+| `expired_token`              | `/oauth2/token` (claim grant) | `user_code` window or outer claim window has closed. Re-call `/agent/identity/claim` to mint a fresh user_code; if that returns `claim_expired`, restart at Step 3.                    |
+| `slow_down`                  | `/oauth2/token` (claim grant) | Polling too fast. Add at least 5s to your `interval` and retry.                                                                                                                        |
+| `rate_limited` (429)         | any                           | Back off and retry.                                                                                                                                                                    |
 
 `user_code` errors are surfaced to the user on the claim page — they never reach you. Your poll keeps returning `"status": "pending"` until either the user gets the code right or the window expires (`"status": "expired"`).
 

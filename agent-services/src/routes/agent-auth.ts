@@ -27,14 +27,13 @@ import {
  * Agent-facing endpoints. The user-facing claim ceremony — the page where
  * the user signs in and types the user_code — lives in routes/login.ts and
  * routes/claim.ts. The agent never reaches those; it polls /oauth2/token
- * with the claim grant (urn:workos:agent-auth:grant-type:claim). See
- * routes/token.ts.
+ * with the claim grant (urn:workos:agent-auth:grant-type:claim).
  *
- * The ceremony block returned in registration responses (under `claim` for
- * email-verification, `claim_attempt` for anonymous) borrows RFC 8628
- * device-authorization shape, with `claim_attempt_token` embedded in
- * `verification_uri` so the URL identifies the registration without
- * leaking the user-typed `user_code`.
+ * Three response shapes from POST /agent/identity for ID-JAG flows:
+ *   - clean match → 200 with identity_assertion
+ *   - step-up required → 401 interaction_required with ceremony block
+ *   - login_required → 401 login_required (auth_time missing or stale;
+ *     agent re-mints upstream)
  */
 
 export const agentAuthRouter = Router();
@@ -77,25 +76,29 @@ async function handleIdJagAssertion(
 ): Promise<void> {
   const verified = await verifyIdJag(body.assertion);
   if (!verified.ok) {
-    res
-      .status(400)
-      .json({ error: verified.error.code, message: verified.error.message });
-    return;
+    return handleIdJagVerifyError(verified.error, res);
   }
   const { claims } = verified;
-  const { user } = matchOrProvision(claims);
+  const match = matchOrProvision(claims);
 
-  /*
-   * Ensure a registration exists for this (iss, sub, aud) so future
-   * credential lifecycle (revocation, audit, /token refresh) has a durable
-   * identity to anchor to. Idempotent across repeat presentations.
-   */
-  const registration = findOrCreateIdJagRegistration({
+  if (match.kind === "step_up_required") {
+    return handleIdJagStepUp(claims, match.matched_user.email, res);
+  }
+
+  const result = findOrCreateIdJagRegistration({
     iss: claims.iss,
     sub: claims.sub,
     aud: claims.aud,
-    userId: user.id,
+    context: { user: match.user },
   });
+  /*
+   * Clean-match path always returns kind: "ready". The step_up_required
+   * branch above is what produces ceremony blocks.
+   */
+  if (result.kind !== "ready") {
+    throw new Error("clean match returned non-ready result");
+  }
+  const { registration } = result;
 
   const { jwt, expiresAt } = await signServiceIdJag({
     registration,
@@ -104,7 +107,7 @@ async function handleIdJagAssertion(
     amr: claims.amr,
   });
   console.log(
-    `[agent-auth] issued identity_assertion to user=${user.id} via iss=${claims.iss} sub=${claims.sub} registration=${registration.id}`,
+    `[agent-auth] issued identity_assertion to user=${match.user.id} via iss=${claims.iss} sub=${claims.sub} registration=${registration.id}`,
   );
   res.json({
     registration_id: registration.id,
@@ -113,6 +116,106 @@ async function handleIdJagAssertion(
     assertion_expires: expiresAt.toISOString(),
     scopes: config.scopesSupported,
   });
+}
+
+/**
+ * Step-up: the ID-JAG matched an existing account by email/phone but no
+ * (iss, sub) delegation exists. Mint the ceremony and return a 401 with
+ * the OIDC-vocabulary `interaction_required` error so the agent knows to
+ * surface the user_code + verification_uri to the user. The user signs in
+ * at the service, sees a provider-aware confirmation page, types the code,
+ * and the next agent poll picks up the bound delegation.
+ */
+function handleIdJagStepUp(
+  claims: {
+    iss: string;
+    sub: string;
+    aud: string;
+    email?: string;
+    phone_number?: string;
+  },
+  matchedEmail: string,
+  res: express.Response,
+): void {
+  const result = findOrCreateIdJagRegistration({
+    iss: claims.iss,
+    sub: claims.sub,
+    aud: claims.aud,
+    context: { email: matchedEmail },
+  });
+  if (result.kind === "ready") {
+    /*
+     * Race with another step-up that completed first. Caller should retry
+     * — next presentation will hit the clean-match path.
+     */
+    res.status(409).json({
+      error: "claimed_or_in_flight",
+      error_description:
+        "Delegation was just bound by a concurrent ceremony; re-present the ID-JAG.",
+    });
+    return;
+  }
+
+  console.log(
+    `[agent-auth] step-up required for iss=${claims.iss} sub=${claims.sub} via email=${matchedEmail}; registration=${result.registration.id}`,
+  );
+
+  res
+    .status(401)
+    .set(
+      "WWW-Authenticate",
+      `AgentAuth error="interaction_required", error_description="ID-JAG matches existing account; user confirmation required to bind delegation"`,
+    )
+    .json({
+      error: "interaction_required",
+      error_description:
+        "This ID-JAG matches an existing account. Surface the user_code + verification_uri so the user can confirm linking the provider identity to their account.",
+      registration_id: result.registration.id,
+      registration_type: "id-jag-step-up",
+      claim_url: `${config.baseUrl}${config.claimEndpointPath}`,
+      claim_token: result.claimTokenPlaintext,
+      claim_token_expires: result.registration.claim!.expires_at.toISOString(),
+      post_claim_scopes: config.scopesSupported,
+      claim: buildCeremonyBlock({
+        claimViewTokenPlaintext: result.claimViewTokenPlaintext,
+        userCode: result.userCode,
+        userCodeExpiresAt: result.userCodeExpiresAt,
+      }),
+    });
+}
+
+/**
+ * Translate verifier error codes into the right HTTP shape. auth_time
+ * problems get 401 `login_required` (OIDC vocabulary) — the agent has to
+ * go back to its provider with prompt=login and re-mint a fresh ID-JAG.
+ * Everything else stays 400 with the profile-specific code.
+ */
+function handleIdJagVerifyError(
+  error: VerifyError,
+  res: express.Response,
+): void {
+  if (
+    error.code === "auth_time_missing" ||
+    error.code === "auth_time_too_old"
+  ) {
+    res
+      .status(401)
+      .set(
+        "WWW-Authenticate",
+        `AgentAuth error="login_required", max_age="${config.idJagMaxAuthAgeSeconds}", error_description="${escapeHeader(error.message)}"`,
+      )
+      .json({
+        error: "login_required",
+        error_description: error.message,
+        max_age: config.idJagMaxAuthAgeSeconds,
+      });
+    return;
+  }
+  res.status(400).json({ error: error.code, message: error.message });
+}
+
+function escapeHeader(s: string): string {
+  return s.replace(/[\\"]/g, "\\$&");
 }
 
 async function handleEmailAssertion(
