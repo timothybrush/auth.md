@@ -152,7 +152,7 @@ In order for consuming services to verify the ID-JAG tokens, agent providers mus
 }
 ```
 
-### Acquiring an access_token
+### Acquiring an access token
 
 Exchanging an ID-JAG for an access_token is a two-step dance: the consuming service first issues its own service-signed identity assertion bound to the registration, then the agent exchanges that assertion at the OAuth token endpoint.
 
