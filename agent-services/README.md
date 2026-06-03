@@ -326,7 +326,7 @@ Successful response (standard OAuth shape per RFC 6749 §5.1):
 }
 ```
 
-No `registration_id` or `registration_type` on the token response — those identifiers live with the registration, not the credential. The same `identity_assertion` can be re-exchanged at `/oauth2/token` to refresh the access_token until the assertion itself expires.
+The token endpoint should never issue a `refresh_token`. The same `identity_assertion` can be re-exchanged at `/oauth2/token` to refresh the access_token until the assertion itself expires.
 
 Error response uses standard OAuth error codes (RFC 6749 §5.2):
 
