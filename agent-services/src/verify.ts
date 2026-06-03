@@ -1,6 +1,6 @@
 import { type JWTPayload, decodeProtectedHeader, jwtVerify } from "jose";
 import { config } from "./config.js";
-import { getPrivateKey, signServiceJwt } from "./keys.js";
+import { getPublicKey, signServiceJwt } from "./keys.js";
 import { type Registration, recordJti } from "./store.js";
 import { getJwks, isTrustedIssuer } from "./trust.js";
 import { randomUUID } from "node:crypto";
@@ -262,8 +262,8 @@ export async function verifyServiceIdJag(
     };
   }
   try {
-    const privateKey = await getPrivateKey();
-    const res = await jwtVerify(jwt, privateKey, {
+    const publicKey = await getPublicKey();
+    const res = await jwtVerify(jwt, publicKey, {
       issuer: config.baseUrl,
       audience: config.baseUrl,
       typ: "oauth-id-jag+jwt",

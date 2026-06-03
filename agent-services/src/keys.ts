@@ -15,6 +15,7 @@ const ALG = "ES256";
 
 type KeyState = {
   privateKey: KeyLike;
+  publicKey: KeyLike;
   publicJwk: JWK;
   kid: string;
 };
@@ -59,8 +60,9 @@ export async function initKeys(): Promise<void> {
   };
   const kid = await calculateJwkThumbprint(publicJwk);
   publicJwk.kid = kid;
+  const publicKey = (await importJWK(publicJwk, ALG)) as KeyLike;
 
-  state = { privateKey, publicJwk, kid };
+  state = { privateKey, publicKey, publicJwk, kid };
   console.log(`[keys] loaded ES256 signing key, kid=${kid}`);
 }
 
@@ -94,4 +96,8 @@ export async function signServiceJwt(
 
 export async function getPrivateKey(): Promise<KeyLike> {
   return requireState().privateKey;
+}
+
+export async function getPublicKey(): Promise<KeyLike> {
+  return requireState().publicKey;
 }
