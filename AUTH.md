@@ -299,7 +299,7 @@ Response (200):
 
 Extract `access_token` and go to [Step 6](#step-6--use-the-access_token). The same `identity_assertion` can be re-used to mint additional access_tokens until it expires.
 
-If `/oauth2/token` returns `invalid_grant`, your `identity_assertion` is expired or revoked — restart at [Step 3](#step-3--register) to mint a fresh one.
+If `/oauth2/token` returns `invalid_grant`, your `identity_assertion` is expired or revoked. Restart the flow at [Step 3](#step-3--register) to mint a fresh identity assertion.
 
 ## Step 6 — Use the access_token
 
