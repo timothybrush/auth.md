@@ -106,13 +106,17 @@ tokenRouter.post(config.tokenEndpointPath, formParser, async (req, res) => {
   }
 
   /*
-   * Anonymous unclaimed registrations get pre-claim scopes; everything else
-   * gets the full scope set. Email-verification registrations always reach
-   * /oauth2/token via a post-claim identity_assertion (the registration has
-   * a user bound), so the same rule applies.
+   * Anonymous registrations stay on pre-claim scopes until a human has
+   * actually confirmed ownership (status: claimed). `unclaimed` and
+   * `pending_claim` both predate confirmation — the latter means the
+   * agent has kicked off a claim ceremony but the user hasn't yet
+   * approved it, so the pre-claim cap still applies. Email-verification
+   * registrations always reach /oauth2/token via a post-claim
+   * identity_assertion (the registration is bound to a user before the
+   * assertion is minted), so they get the full set.
    */
   const scope =
-    registration.kind === "anonymous" && registration.status === "unclaimed"
+    registration.kind === "anonymous" && registration.status !== "claimed"
       ? config.preClaimScopes
       : config.scopesSupported;
 
