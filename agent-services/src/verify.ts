@@ -182,6 +182,26 @@ export async function verifySecEventJwt(
         },
       };
     }
+    /*
+     * RFC 8417 §2.1: `events` is REQUIRED and is a JSON object whose keys
+     * are event-type schema URIs. Reject anything that isn't a non-empty
+     * object so the dispatch step downstream has something real to match
+     * against.
+     */
+    if (
+      typeof claims.events !== "object" ||
+      claims.events === null ||
+      Array.isArray(claims.events) ||
+      Object.keys(claims.events).length === 0
+    ) {
+      return {
+        ok: false,
+        error: {
+          code: "invalid_request",
+          message: "SET must include a non-empty events claim (RFC 8417 §2.1).",
+        },
+      };
+    }
     const replay = recordJti(
       claims.jti,
       claims.exp ?? Math.floor(Date.now() / 1000) + 300,

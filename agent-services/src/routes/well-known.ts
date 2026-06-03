@@ -1,5 +1,6 @@
 import { Router } from "express";
 import { config } from "../config.js";
+import { IDENTITY_ASSERTION_REVOKED_SCHEMA } from "./agent-auth.js";
 
 export const wellKnownRouter = Router();
 
@@ -40,9 +41,7 @@ wellKnownRouter.get("/.well-known/oauth-authorization-server", (_req, res) => {
           "verified_email",
         ],
       },
-      events_supported: [
-        "https://schemas.workos.com/events/agent/auth/identity/assertion/revoked",
-      ],
+      events_supported: [IDENTITY_ASSERTION_REVOKED_SCHEMA],
     },
   });
 });

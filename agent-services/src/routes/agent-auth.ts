@@ -585,17 +585,34 @@ agentAuthRouter.post(
       res.status(400).json({ err, description });
       return;
     }
-    const count = revokeForDelegation(
-      verified.claims.iss,
-      verified.claims.sub,
-      verified.claims.aud,
-    );
-    console.log(
-      `[agent-auth] revoked ${count} credentials for iss=${verified.claims.iss} sub=${verified.claims.sub}`,
-    );
+    /*
+     * Dispatch on the SET's `events` schema URIs. We only handle the
+     * identity-assertion revocation event today; per RFC 8417 §2.2, any
+     * unknown schemas in the same envelope are silently ignored (we still
+     * 202 the delivery — the SET was well-formed, we just had nothing to
+     * do for it).
+     */
+    const schemas = Object.keys(verified.claims.events);
+    if (schemas.includes(IDENTITY_ASSERTION_REVOKED_SCHEMA)) {
+      const count = revokeForDelegation(
+        verified.claims.iss,
+        verified.claims.sub,
+        verified.claims.aud,
+      );
+      console.log(
+        `[agent-auth] revoked ${count} credentials for iss=${verified.claims.iss} sub=${verified.claims.sub}`,
+      );
+    } else {
+      console.log(
+        `[agent-auth] SET from ${verified.claims.iss} carried no recognized events (${schemas.join(", ")}); no-op`,
+      );
+    }
     res.status(202).end();
   },
 );
+
+export const IDENTITY_ASSERTION_REVOKED_SCHEMA =
+  "https://schemas.workos.com/events/agent/auth/identity/assertion/revoked";
 
 /**
  * Map our internal verify error codes onto the SET delivery error codes
