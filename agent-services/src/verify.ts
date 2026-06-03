@@ -137,7 +137,12 @@ export async function verifyIdJag(
   return { ok: true, claims };
 }
 
-export type LogoutClaims = JWTPayload & {
+/**
+ * RFC 8417 Security Event Token (SET). Pushed by trusted providers to the
+ * service's `events_endpoint` to invalidate registrations and credentials
+ * tied to an upstream identity event.
+ */
+export type SecEventClaims = JWTPayload & {
   iss: string;
   sub: string;
   aud: string;
@@ -145,10 +150,10 @@ export type LogoutClaims = JWTPayload & {
   events: Record<string, unknown>;
 };
 
-export async function verifyLogoutJwt(
+export async function verifySecEventJwt(
   jwt: string,
 ): Promise<
-  { ok: true; claims: LogoutClaims } | { ok: false; error: VerifyError }
+  { ok: true; claims: SecEventClaims } | { ok: false; error: VerifyError }
 > {
   const iss = peekIssuer(jwt);
   if (!iss || !isTrustedIssuer(iss)) {
@@ -164,10 +169,10 @@ export async function verifyLogoutJwt(
     const res = await jwtVerify(jwt, getJwks(iss), {
       issuer: iss,
       audience: config.baseUrl,
-      typ: "logout+jwt",
+      typ: "secevent+jwt",
       clockTolerance: config.clockSkewSeconds,
     });
-    const claims = res.payload as LogoutClaims;
+    const claims = res.payload as SecEventClaims;
     if (!claims.jti || !claims.sub) {
       return {
         ok: false,

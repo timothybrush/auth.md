@@ -81,7 +81,7 @@ Discovery is two-hop:
        "skill": "https://service.example.com/auth.md",
        "identity_endpoint": "https://auth.service.example.com/agent/identity",
        "claim_endpoint": "https://auth.service.example.com/agent/identity/claim",
-       "revocation_uri": "https://auth.service.example.com/agent/auth/revoke",
+       "events_endpoint": "https://auth.service.example.com/agent/event/notify",
        "identity_types_supported": ["anonymous", "identity_assertion"],
        "identity_assertion": {
          "assertion_types_supported": [
@@ -96,7 +96,7 @@ Discovery is two-hop:
    }
    ```
 
-   The top-level `token_endpoint`, `revocation_endpoint`, and `grant_types_supported` are standard [RFC 8414](https://datatracker.ietf.org/doc/html/rfc8414) / [RFC 7009](https://datatracker.ietf.org/doc/html/rfc7009) / [RFC 7523](https://datatracker.ietf.org/doc/html/rfc7523) fields. The `agent_auth` block carries the profile-specific bootstrap, claim, and revocation endpoints.
+   The top-level `token_endpoint`, `revocation_endpoint`, and `grant_types_supported` are standard [RFC 8414](https://datatracker.ietf.org/doc/html/rfc8414) / [RFC 7009](https://datatracker.ietf.org/doc/html/rfc7009) / [RFC 7523](https://datatracker.ietf.org/doc/html/rfc7523) fields. The `agent_auth` block carries the profile-specific bootstrap, claim, and SET-receive endpoints.
 
 ### Minting the Identity Assertion
 
@@ -233,16 +233,16 @@ Services will reject ID-JAGs with neither a verified email nor a verified phone 
 
 ## Tracking and Revocation
 
-In a robust implementation, agent providers will want to track the services to which identity assertions have been delegated so that the user can revoke the credentials if needed from a control plane. The discovery document and the API response both contain the endpoint for revoking the assertion. The mechanism is a [logout token](https://openid.net/specs/openid-connect-backchannel-1_0.html):
+In a robust implementation, agent providers will want to track the services to which identity assertions have been delegated so that the user can revoke the delegation if needed from a control plane. The discovery document's `agent_auth.events_endpoint` is where the provider transmits identity-event SETs to the service. Transmission is the canonical [RFC 8935](https://datatracker.ietf.org/doc/html/rfc8935) push-based delivery of a [Security Event Token (RFC 8417)](https://datatracker.ietf.org/doc/html/rfc8417):
 
 ```json
-POST /agent/auth/revoke HTTP/1.1
+POST /agent/event/notify HTTP/1.1
 Host: auth.service.example.com
-Content-Type: application/logout+jwt
+Content-Type: application/secevent+jwt
 
 // header
 {
-  "typ": "logout+jwt",
+  "typ": "secevent+jwt",
   "alg": "ES256", // or RS256, etc.
   "kid": "<provider key id>"
 }
@@ -260,6 +260,8 @@ Content-Type: application/logout+jwt
 }
 ```
 
-Receiving services invalidate credentials associated with the ID-JAG.
+The receiving service validates the SET against the provider's JWKS, dispatches on the `events` claim, and invalidates the identity assertion (and the credentials derived from it). Per RFC 8935 §2.4, a successful receive returns 202 Accepted; failures return 400 with `{ "err": "<code>", "description": "..." }`.
 
-In a future state, we expect the need for [SET](https://datatracker.ietf.org/doc/html/rfc8417) / [CAEP](https://openid.net/specs/openid-caep-1_0-final.html) / RISC event communication between the agent providers and the consuming services, via webhook or SSE.
+Note that this `events_endpoint` is distinct from the top-level `revocation_endpoint`. The `revocation_endpoint` ([RFC 7009](https://datatracker.ietf.org/doc/html/rfc7009)) is for the agent or admin to kill a single bearer credential by value. The `events_endpoint` is for the provider to notify the service of an upstream identity event — a broader signal that invalidates the registration itself.
+
+In a future state, we expect richer [SET](https://datatracker.ietf.org/doc/html/rfc8417) / [CAEP](https://openid.net/specs/openid-caep-1_0-final.html) / RISC event communication between agent providers and consuming services, layered on this same push-based SET delivery channel.

@@ -93,8 +93,8 @@ function renderHtml(seeded: { email: string; name: string }[]): string {
       <option value="once">once — marked consumed on first mint</option>
     </select>
   </label>
-  <label>Revocation URI (optional)
-    <input id="grant-revoke" value="${config.consumerUrl}/agent/auth/revoke" placeholder="${config.consumerUrl}/agent/auth/revoke">
+  <label>Events URI (optional)
+    <input id="grant-revoke" value="${config.consumerUrl}/agent/event/notify" placeholder="${config.consumerUrl}/agent/event/notify">
   </label>
   <div class="label">Request</div>
   <div class="req" id="grant-req"><pre></pre></div>
@@ -139,7 +139,7 @@ function renderHtml(seeded: { email: string; name: string }[]): string {
 
 <section id="step-6" hidden>
   <h2><span class="num">6</span>Revoke grant</h2>
-  <p>Deleting a grant removes it locally. If a <code>revocation_uri</code> was recorded, the provider first POSTs a <code>logout+jwt</code> there; if the call fails, the grant is retained and the endpoint returns 500. Any credentials the consumer issued for this delegation are invalidated.</p>
+  <p>Deleting a grant removes it locally. If an <code>events_uri</code> was recorded, the provider first POSTs a <code>secevent+jwt</code> (RFC 8417 SET, delivered per RFC 8935) there; if the call fails, the grant is retained and the endpoint returns 500. Any credentials the consumer issued for this delegation are invalidated.</p>
   <div class="label">Request</div>
   <div class="req" id="revoke-req"><pre></pre></div>
   <button class="primary" type="button" data-action="revoke">Revoke</button>
@@ -227,7 +227,7 @@ function updateGrantPreview() {
     mode: document.getElementById("grant-mode").value,
   };
   const rev = document.getElementById("grant-revoke").value.trim();
-  if (rev) body.revocation_uri = rev;
+  if (rev) body.events_uri = rev;
   document.querySelector("#grant-req pre").textContent =
     "POST /grants\\nAuthorization: Bearer <session>\\n\\n" + jsonStr(body);
 }
@@ -299,7 +299,7 @@ async function grant() {
     mode: document.getElementById("grant-mode").value,
   };
   const rev = document.getElementById("grant-revoke").value.trim();
-  if (rev) body.revocation_uri = rev;
+  if (rev) body.events_uri = rev;
 
   const r = await jsonFetch("/grants", { method: "POST", body: JSON.stringify(body) });
   document.getElementById("grant-out").innerHTML = resBlock(r.status, r.body, r.ok);
@@ -454,7 +454,7 @@ async function revoke() {
 
   // If a credential was exchanged at the consumer, prove it's now rejected.
   // A 401 here is the expected outcome — it confirms the consumer processed
-  // the logout+jwt. A 200 would mean revocation didn't take effect.
+  // the SET. A 200 would mean revocation didn't take effect.
   if (state.credential) {
     const url = state.audience + "/api/resource";
     try {

@@ -31,8 +31,8 @@ export const config = Object.freeze({
   identityEndpointPath: "/agent/identity",
   /** Claim ceremony endpoint, nested under identity. */
   claimEndpointPath: "/agent/identity/claim",
-  /** Legacy logout-token receiver path. */
-  revocationUriPath: "/agent/auth/revoke",
+  /** RFC 8935 SET receiver path (provider-pushed identity events). */
+  eventsEndpointPath: "/agent/event/notify",
   corsOrigins: [providerUrl],
   mailDir: ".mail",
   mailUrlPath: "/mail",

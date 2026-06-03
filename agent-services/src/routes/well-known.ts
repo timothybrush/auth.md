@@ -32,7 +32,7 @@ wellKnownRouter.get("/.well-known/oauth-authorization-server", (_req, res) => {
       skill: `${config.baseUrl}/auth.md`,
       identity_endpoint: `${config.baseUrl}${config.identityEndpointPath}`,
       claim_endpoint: `${config.baseUrl}${config.claimEndpointPath}`,
-      revocation_uri: `${config.baseUrl}${config.revocationUriPath}`,
+      events_endpoint: `${config.baseUrl}${config.eventsEndpointPath}`,
       identity_types_supported: ["anonymous", "identity_assertion"],
       identity_assertion: {
         assertion_types_supported: [

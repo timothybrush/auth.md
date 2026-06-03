@@ -68,7 +68,7 @@ Response shape:
     "skill": "https://service.example.com/auth.md",
     "identity_endpoint": "https://auth.service.example.com/agent/identity",
     "claim_endpoint": "https://auth.service.example.com/agent/identity/claim",
-    "revocation_uri": "https://auth.service.example.com/agent/auth/revoke",
+    "events_endpoint": "https://auth.service.example.com/agent/event/notify",
     "identity_types_supported": ["anonymous", "identity_assertion"],
     "identity_assertion": {
       "assertion_types_supported": [
@@ -92,7 +92,7 @@ The outer fields restate the PRM. The top-level OAuth endpoints (`issuer`, `toke
 - `agent_auth.skill` — the URL of this document.
 - `agent_auth.identity_endpoint` — where you POST to register (Step 3).
 - `agent_auth.claim_endpoint` — where you POST the claim invite and OTP (Step 4).
-- `agent_auth.revocation_uri` — where the provider POSTs a [logout token](https://openid.net/specs/openid-connect-backchannel-1_0.html) to notify the service of upstream identity events.
+- `agent_auth.events_endpoint` — where the provider POSTs a [Security Event Token (RFC 8417)](https://datatracker.ietf.org/doc/html/rfc8417) per [RFC 8935](https://datatracker.ietf.org/doc/html/rfc8935) push delivery to notify the service of upstream identity events. You don't call this; it tells you what to expect.
 - `agent_auth.identity_types_supported` — which registration methods this service accepts. Pick yours from Step 2.
 - `agent_auth.identity_assertion.assertion_types_supported` — which assertion types this service accepts (ID-JAG, verified email, etc.).
 - `agent_auth.events_supported` — event schemas this service can ingest (currently revocation). Informational; you don't act on these directly.
@@ -347,6 +347,6 @@ Retry policy:
 Two independent layers can kill what you're holding:
 
 - **Credential layer ([RFC 7009](https://datatracker.ietf.org/doc/html/rfc7009), `revocation_endpoint`)** — agent-callable. POST `token=<access_token>&token_type_hint=access_token` (form-encoded) to the top-level `revocation_endpoint` to kill one access_token. 200 on success, idempotent. Your `identity_assertion` is intact; re-run [Step 5](#step-5--exchange-the-assertion) to mint a fresh access_token.
-- **Registration layer (`agent_auth.revocation_uri`)** — provider-driven. The provider that minted your ID-JAG can POST a [logout token](https://openid.net/specs/openid-connect-backchannel-1_0.html) (`Content-Type: application/logout+jwt`) to this service's `revocation_uri`. The service invalidates the identity assertion and every access_token derived from it. You don't call this; you discover it the next time `/oauth2/token` returns `invalid_grant` — restart at [Step 3](#step-3--register).
+- **Registration layer ([RFC 8935](https://datatracker.ietf.org/doc/html/rfc8935) Security Event Token delivery, `agent_auth.events_endpoint`)** — provider-driven. The provider that minted your ID-JAG can POST a [SET (RFC 8417)](https://datatracker.ietf.org/doc/html/rfc8417) (`Content-Type: application/secevent+jwt`) to this service's `events_endpoint`. The service invalidates the identity assertion and every access_token derived from it. You don't call this; you discover it the next time `/oauth2/token` returns `invalid_grant` — restart at [Step 3](#step-3--register).
 
 On a 401 for a previously-working access_token: try [Step 5](#step-5--exchange-the-assertion) once. If `/oauth2/token` succeeds, the credential was revoked at the credential layer and your fresh access_token works. If `/oauth2/token` returns `invalid_grant`, the registration was killed at the registration layer — restart at [Step 3](#step-3--register).
