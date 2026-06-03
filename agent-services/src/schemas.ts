@@ -30,24 +30,39 @@ export const claimBody = z.object({
   email: z.email(),
 });
 
-export const claimCompleteBody = z.object({
-  claim_token: z.string().min(1),
-  otp: z.string().min(1),
+/** Mock IdP sign-in form. */
+export const loginFormBody = z.object({
+  email: z.email(),
+  return_to: z.string().optional(),
 });
 
-export const generateOtpBody = z.object({
+/** User-facing claim form. */
+export const claimFormBody = z.object({
   claim_attempt_token: z.string().min(1),
+  user_code: z.string().regex(/^\d{6}$/, "user_code must be a 6-digit code"),
 });
 
 /**
- * RFC 7523 JWT-bearer grant. The agent presents a service-signed
- * identity_assertion as the `assertion` parameter; the service exchanges it
- * for an access_token scoped per the registration's state.
+ * RFC 7523 JWT-bearer grant body for `/oauth2/token`. The agent presents a
+ * service-signed identity_assertion as the `assertion` parameter; the
+ * service exchanges it for an access_token scoped per the registration's
+ * state.
  */
-export const tokenEndpointBody = z.object({
+export const jwtBearerGrantBody = z.object({
   grant_type: z.literal("urn:ietf:params:oauth:grant-type:jwt-bearer"),
   assertion: z.string().min(1),
   resource: z.string().url().optional(),
+});
+
+/**
+ * Profile-specific grant for claim-ceremony polling. Device-authorization-
+ * shaped (RFC 8628 §3.4 semantics) but uses our own grant URN so it doesn't
+ * collide with services that also implement standard device auth. The
+ * `claim_token` from the registration response is the polling bearer.
+ */
+export const claimGrantBody = z.object({
+  grant_type: z.literal("urn:workos:agent-auth:grant-type:claim"),
+  claim_token: z.string().min(1),
 });
 
 /** RFC 7009 token revocation. */

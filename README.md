@@ -1,6 +1,6 @@
 # auth.md
 
-A reference implementation of **agentic registration** — a protocol for agents to authenticate to services on behalf of users. Three roles: an **agent** acting for a user, an **agent provider** that mints identity assertions ([ID-JAGs](https://datatracker.ietf.org/doc/draft-ietf-oauth-identity-assertion-authz-grant/)), and a **service** that accepts those assertions, when available, and issues credentials. If the agent is not associated with a user identity, or the agent provider does not support ID-JAGs, the service uses an OTP-based claim flow to authenticate the agent instead.
+A reference implementation of **agentic registration** — a protocol for agents to authenticate to services on behalf of users. Three roles: an **agent** acting for a user, an **agent provider** that mints identity assertions ([ID-JAGs](https://datatracker.ietf.org/doc/draft-ietf-oauth-identity-assertion-authz-grant/)), and a **service** that accepts those assertions, when available, and issues credentials. If the agent is not associated with a user identity, or the agent provider does not support ID-JAGs, the service uses an [RFC 8628](https://datatracker.ietf.org/doc/html/rfc8628)-shaped user-code claim ceremony to authenticate the agent instead.
 
 This repo includes sample implementations for both the agent provider and agent service side of agentic registration, and includes a sample [`AUTH.md`](AUTH.md) file, which the agent service would host, instructing agents how to authenticate with the service.
 
@@ -47,7 +47,10 @@ Hosted at `/.well-known/oauth-authorization-server`:
   "issuer": "https://auth.service.example.com",
   "token_endpoint": "https://auth.service.example.com/oauth2/token",
   "revocation_endpoint": "https://auth.service.example.com/oauth2/revoke",
-  "grant_types_supported": ["urn:ietf:params:oauth:grant-type:jwt-bearer"],
+  "grant_types_supported": [
+    "urn:ietf:params:oauth:grant-type:jwt-bearer",
+    "urn:workos:agent-auth:grant-type:claim"
+  ],
 
   "agent_auth": {
     "skill": "https://service.example.com/auth.md",
@@ -111,18 +114,18 @@ sequenceDiagram
     participant Service
 
     Agent->>Service: POST /agent/identity<br/>{ type: identity_assertion, assertion_type: verified_email, assertion: email }
-    Service->>User: Send claim-view email (one-time URL)
-    Service-->>Agent: 200 OK (claim_token, no assertion yet)
-    User->>Service: GET /agent/identity/claim/view?token=...
-    Service-->>User: 6-digit OTP page
-    User-->>Agent: Reads OTP back
-    Agent->>Service: POST /agent/identity/claim/complete<br/>{ claim_token, otp }
-    Service-->>Agent: 200 OK (identity_assertion)
-    Agent->>Service: POST /oauth2/token<br/>grant_type=jwt-bearer&assertion=...
-    Service-->>Agent: 200 OK (access_token)
+    Service-->>Agent: 200 OK (claim_token, claim: user_code + verification_uri)
+    Agent-->>User: Surface user_code + verification_uri
+    User->>Service: GET verification_uri (signs in, lands on /claim)
+    User->>Service: POST /agent/identity/claim/complete<br/>{ claim_attempt_token, user_code }
+
+    loop until claimed
+      Agent->>Service: POST /oauth2/token<br/>grant_type=claim&claim_token=...
+      Service-->>Agent: 200 OK (access_token + identity_assertion) | authorization_pending
+    end
 ```
 
-### Anonymous Registration with OTP Claim
+### Anonymous Registration with Claim Ceremony
 
 ```mermaid
 sequenceDiagram
@@ -139,12 +142,13 @@ sequenceDiagram
 
     User-->>Agent: Wants to take ownership
     Agent->>Service: POST /agent/identity/claim<br/>{ claim_token, email }
-    Service->>User: Send claim-view email (one-time URL)
-    User->>Service: GET /agent/identity/claim/view?token=...
-    Service-->>User: 6-digit OTP page
-    User-->>Agent: Reads OTP back
-    Agent->>Service: POST /agent/identity/claim/complete<br/>{ claim_token, otp }
-    Service-->>Agent: 200 OK { status: claimed }
-    Agent->>Service: POST /oauth2/token (re-exchange same assertion)
-    Service-->>Agent: 200 OK (access_token with post-claim scope)
+    Service-->>Agent: 200 OK (claim_attempt: user_code + verification_uri)
+    Agent-->>User: Surface user_code + verification_uri
+    User->>Service: GET verification_uri (signs in, lands on /claim)
+    User->>Service: POST /agent/identity/claim/complete<br/>{ claim_attempt_token, user_code }
+
+    loop until claimed
+      Agent->>Service: POST /oauth2/token<br/>grant_type=claim&claim_token=...
+      Service-->>Agent: 200 OK (post-claim access_token + v2 identity_assertion) | authorization_pending
+    end
 ```

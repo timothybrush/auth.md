@@ -21,7 +21,14 @@ export const config = Object.freeze({
   serviceAssertionTtlSeconds: 3600,
   anonymousTtlSeconds: 86400,
   claimViewTokenTtlSeconds: 600,
-  otpTtlSeconds: 600,
+  /** Lifetime of the user_code minted at ceremony start (RFC 8628). */
+  userCodeTtlSeconds: 600,
+  /** Recommended agent poll cadence (RFC 8628 `interval`). */
+  pollIntervalSeconds: 5,
+  /** Lifetime of the cookie-bound session minted at /login. */
+  sessionTtlSeconds: 86400,
+  /** Name of the cookie holding the user session for the claim page. */
+  sessionCookieName: "service_session",
   clockSkewSeconds: 60,
   /** RFC 7523 JWT-bearer grant endpoint. */
   tokenEndpointPath: "/oauth2/token",
@@ -34,7 +41,5 @@ export const config = Object.freeze({
   /** RFC 8935 SET receiver path (provider-pushed identity events). */
   eventsEndpointPath: "/agent/event/notify",
   corsOrigins: [providerUrl],
-  mailDir: ".mail",
-  mailUrlPath: "/mail",
   keyPath: ".keys/signing-key.json",
 });

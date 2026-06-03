@@ -1,3 +1,4 @@
+import cookieParser from "cookie-parser";
 import cors from "cors";
 import express from "express";
 import { config } from "./config.js";
@@ -5,8 +6,9 @@ import { initKeys } from "./keys.js";
 import { agentAuthRouter } from "./routes/agent-auth.js";
 import { apiRouter } from "./routes/api.js";
 import { authMdRouter } from "./routes/auth-md.js";
+import { claimRouter } from "./routes/claim.js";
 import { homeRouter } from "./routes/home.js";
-import { mailRouter } from "./routes/mail.js";
+import { loginRouter } from "./routes/login.js";
 import { tokenRouter } from "./routes/token.js";
 import { wellKnownRouter } from "./routes/well-known.js";
 
@@ -31,12 +33,19 @@ async function main() {
   const app = express();
   app.use(cors({ origin: config.corsOrigins }));
   app.use(express.json());
+  /*
+   * The user-facing /login and /claim forms post application/x-www-form-
+   * urlencoded. Agent API routes accept JSON only.
+   */
+  app.use(express.urlencoded({ extended: false }));
+  app.use(cookieParser());
   app.use(accessLog);
 
   app.use(homeRouter);
   app.use(wellKnownRouter);
   app.use(authMdRouter);
-  app.use(mailRouter);
+  app.use(loginRouter);
+  app.use(claimRouter);
   app.use(agentAuthRouter);
   app.use(tokenRouter);
   app.use(apiRouter);
