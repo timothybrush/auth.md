@@ -31,7 +31,7 @@ Service at <http://localhost:8000>, provider at <http://localhost:4000>. The ser
 
 ## System Flows
 
-Registration and credential issuance are split across two endpoints. `POST /agent/identity` accepts the agent's chosen identity proof (ID-JAG, verified email, or anonymous) and returns a service-signed `identity_assertion`. The agent then exchanges that assertion at `POST /oauth2/token` (RFC 7523 JWT-bearer grant) for an access_token.
+Registration and credential issuance are split across two endpoints. `POST /agent/identity` accepts the agent's chosen identity assertion (ID-JAG, verified email, or anonymous) and returns a service-signed `identity_assertion`. The agent then exchanges that assertion at `POST /oauth2/token` (RFC 7523 JWT-bearer grant) for an access_token.
 
 ### Discovery
 
