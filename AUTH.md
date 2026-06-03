@@ -92,7 +92,7 @@ The outer fields restate the PRM. The top-level OAuth endpoints (`issuer`, `toke
 - `agent_auth.skill` — the URL of this document.
 - `agent_auth.identity_endpoint` — where you POST to register (Step 3).
 - `agent_auth.claim_endpoint` — where you POST the claim invite and OTP (Step 4).
-- `agent_auth.revocation_uri` — where the provider POSTs a [logout token](https://openid.net/specs/openid-connect-backchannel-1_0.html) to notify the service of upstream identity events. You don't call this; it tells you what to expect.
+- `agent_auth.revocation_uri` — where the provider POSTs a [logout token](https://openid.net/specs/openid-connect-backchannel-1_0.html) to notify the service of upstream identity events.
 - `agent_auth.identity_types_supported` — which registration methods this service accepts. Pick yours from Step 2.
 - `agent_auth.identity_assertion.assertion_types_supported` — which assertion types this service accepts (ID-JAG, verified email, etc.).
 - `agent_auth.events_supported` — event schemas this service can ingest (currently revocation). Informational; you don't act on these directly.
