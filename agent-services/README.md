@@ -400,7 +400,6 @@ Reject ID-JAGs with neither a verified email nor a verified phone — there's no
 
 Both `anonymous` and `verified_email` flows funnel into the same ceremony: the service mints a `user_code`, the agent surfaces it to the user along with a `verification_uri`, the user signs in to the service and types the code on a service-owned form, the agent polls for completion. The ceremony block borrows from [RFC 8628 device authorization](https://datatracker.ietf.org/doc/html/rfc8628), and polling happens at the standard `token_endpoint` with a profile-specific grant (`urn:workos:agent-auth:grant-type:claim`).
 
-The user_code travels **agent → user → service**, not service → user → agent. This means there's no email containing a code that a phishing agent could intercept — the agent already has the code, and the only place it can be redeemed is on the service's own claim page after the user signs in.
 
 **Why a profile-specific grant URN.** Polling could in principle reuse `urn:ietf:params:oauth:grant-type:device_code`, but a service implementing standard RFC 8628 device authorization at the same token endpoint would then have to disambiguate by inspecting the bearer value (claim_token vs device_code). A custom URN routes by grant_type, which is where OAuth implementations already dispatch — no collision risk.
 
