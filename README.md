@@ -53,7 +53,7 @@ Hosted at `/.well-known/oauth-authorization-server`:
     "skill": "https://service.example.com/auth.md",
     "identity_endpoint": "https://auth.service.example.com/agent/identity",
     "claim_endpoint": "https://auth.service.example.com/agent/identity/claim",
-    "revocation_uri": "https://auth.service.example.com/agent/auth/revoke",
+    "events_endpoint": "https://auth.service.example.com/agent/event/notify",
     "identity_types_supported": ["anonymous", "identity_assertion"],
     "identity_assertion": {
       "assertion_types_supported": [

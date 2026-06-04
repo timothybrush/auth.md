@@ -262,7 +262,7 @@ Content-Type: application/json
   <div class="req" id="call-req"><pre></pre></div>
   <button class="primary" type="button" data-action="call">Call /api/resource</button>
   <div id="call-out"></div>
-  <p class="note" style="margin-top:1rem">Revocation has two surfaces. RFC 7009 token revocation at <code>/oauth2/revoke</code> kills one access_token; the agent can re-exchange the identity_assertion to mint a fresh one. The provider can also POST a <code>logout+jwt</code> to <code>/agent/auth/revoke</code>, which invalidates all credentials for the <code>(iss, sub, aud)</code> — see the provider demo's revoke step.</p>
+  <p class="note" style="margin-top:1rem">Revocation has two surfaces. RFC 7009 token revocation at <code>/oauth2/revoke</code> kills one access_token; the agent can re-exchange the identity_assertion to mint a fresh one. The provider can also POST a <code>secevent+jwt</code> (RFC 8417 SET, delivered per RFC 8935) to <code>/agent/event/notify</code>, which invalidates all credentials for the <code>(iss, sub, aud)</code> — see the provider demo's revoke step.</p>
 </section>
 </div>
 </div>

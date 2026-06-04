@@ -47,7 +47,7 @@ export async function mintIdJag(input: IdJagInput): Promise<IdJagResult> {
   return { jwt, jti, expiresIn };
 }
 
-export async function mintLogoutJwt(input: {
+export async function mintSecEventJwt(input: {
   user: User;
   audience: string;
 }): Promise<string> {
@@ -61,5 +61,5 @@ export async function mintLogoutJwt(input: {
         {},
     },
   };
-  return sign(payload, "logout+jwt");
+  return sign(payload, "secevent+jwt");
 }

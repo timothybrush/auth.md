@@ -1,6 +1,6 @@
 import { Router } from "express";
 import { requireSession } from "../auth.js";
-import { mintLogoutJwt } from "../jwts.js";
+import { mintSecEventJwt } from "../jwts.js";
 import { createGrantBody, parseBody } from "../schemas.js";
 import { grants, listGrantsForUser, upsertGrant } from "../store.js";
 
@@ -16,7 +16,7 @@ grantsRouter.post("/grants", requireSession, (req, res) => {
     userId: req.user!.id,
     audience: parsed.value.audience,
     mode: parsed.value.mode,
-    revocationUri: parsed.value.revocation_uri,
+    eventsUri: parsed.value.events_uri,
   });
   res.status(201).json(grant);
 });
@@ -34,33 +34,37 @@ grantsRouter.delete("/grants/:id", requireSession, async (req, res) => {
     return;
   }
 
-  if (grant.revocation_uri) {
+  if (grant.events_uri) {
     let resp: Response;
     try {
-      const logoutJwt = await mintLogoutJwt({
+      const setJwt = await mintSecEventJwt({
         user: req.user!,
         audience: grant.audience,
       });
-      resp = await fetch(grant.revocation_uri, {
+      resp = await fetch(grant.events_uri, {
         method: "POST",
-        headers: { "content-type": "application/logout+jwt" },
-        body: logoutJwt,
+        headers: { "content-type": "application/secevent+jwt" },
+        body: setJwt,
       });
     } catch (err) {
       console.warn("[revocation] outbound call failed:", err);
       res.status(500).json({
         error: "revocation_failed",
-        message: `Failed to reach ${grant.revocation_uri}. Grant retained.`,
+        message: `Failed to reach ${grant.events_uri}. Grant retained.`,
       });
       return;
     }
+    /*
+     * RFC 8935 §2.4: success is 202 Accepted. Treat any non-2xx as a
+     * delivery failure and keep the grant on file so the user can retry.
+     */
     if (!resp.ok) {
       console.warn(
-        `[revocation] ${grant.revocation_uri} responded ${resp.status}; grant retained`,
+        `[revocation] ${grant.events_uri} responded ${resp.status}; grant retained`,
       );
       res.status(500).json({
         error: "revocation_failed",
-        message: `${grant.revocation_uri} responded ${resp.status}. Grant retained.`,
+        message: `${grant.events_uri} responded ${resp.status}. Grant retained.`,
       });
       return;
     }

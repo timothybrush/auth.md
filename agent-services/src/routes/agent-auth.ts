@@ -22,7 +22,12 @@ import {
   revokeForDelegation,
   sha256Hex,
 } from "../store.js";
-import { signServiceIdJag, verifyIdJag, verifyLogoutJwt } from "../verify.js";
+import {
+  type VerifyError,
+  signServiceIdJag,
+  verifyIdJag,
+  verifySecEventJwt,
+} from "../verify.js";
 
 /*
  * Agent-facing endpoints implementing the OTP-exchange flavor of the
@@ -554,34 +559,79 @@ function escapeHtml(s: string): string {
   );
 }
 
+/*
+ * RFC 8935 SET receiver. Providers POST a signed Security Event Token
+ * (RFC 8417) here to invalidate the registration and credentials tied to
+ * the (iss, sub, aud) triple in the SET. Response shape follows RFC 8935
+ * §2.4 — 202 Accepted with no body on success; 400 with { err, description }
+ * on failure (note: "err"/"description", not "error"/"message").
+ */
 agentAuthRouter.post(
-  config.revocationUriPath,
-  express.text({ type: "application/logout+jwt" }),
+  config.eventsEndpointPath,
+  express.text({ type: "application/secevent+jwt" }),
   async (req, res) => {
     const token = typeof req.body === "string" ? req.body.trim() : "";
     if (!token) {
       res.status(400).json({
-        error: "invalid_request",
-        message: "Expected JWT body with Content-Type application/logout+jwt.",
+        err: "invalid_request",
+        description:
+          "Expected JWT body with Content-Type application/secevent+jwt.",
       });
       return;
     }
-    const verified = await verifyLogoutJwt(token);
+    const verified = await verifySecEventJwt(token);
     if (!verified.ok) {
-      res.status(400).json({
-        error: verified.error.code,
-        message: verified.error.message,
-      });
+      const { err, description } = mapSecEventError(verified.error);
+      res.status(400).json({ err, description });
       return;
     }
-    const count = revokeForDelegation(
-      verified.claims.iss,
-      verified.claims.sub,
-      verified.claims.aud,
-    );
-    console.log(
-      `[agent-auth] revoked ${count} credentials for iss=${verified.claims.iss} sub=${verified.claims.sub}`,
-    );
-    res.json({ revoked: count });
+    /*
+     * Dispatch on the SET's `events` schema URIs. We only handle the
+     * identity-assertion revocation event today; per RFC 8417 §2.2, any
+     * unknown schemas in the same envelope are silently ignored (we still
+     * 202 the delivery — the SET was well-formed, we just had nothing to
+     * do for it).
+     */
+    const schemas = Object.keys(verified.claims.events);
+    if (schemas.includes(IDENTITY_ASSERTION_REVOKED_SCHEMA)) {
+      const count = revokeForDelegation(
+        verified.claims.iss,
+        verified.claims.sub,
+        verified.claims.aud,
+      );
+      console.log(
+        `[agent-auth] revoked ${count} credentials for iss=${verified.claims.iss} sub=${verified.claims.sub}`,
+      );
+    } else {
+      console.log(
+        `[agent-auth] SET from ${verified.claims.iss} carried no recognized events (${schemas.join(", ")}); no-op`,
+      );
+    }
+    res.status(202).end();
   },
 );
+
+export const IDENTITY_ASSERTION_REVOKED_SCHEMA =
+  "https://schemas.workos.com/events/agent/auth/identity/assertion/revoked";
+
+/**
+ * Map our internal verify error codes onto the SET delivery error codes
+ * defined in RFC 8935 §2.4: invalid_request, invalid_key, invalid_issuer,
+ * invalid_audience, authentication_failed.
+ */
+function mapSecEventError(error: VerifyError): {
+  err: string;
+  description: string;
+} {
+  switch (error.code) {
+    case "invalid_issuer":
+      return { err: "invalid_issuer", description: error.message };
+    case "invalid_audience":
+      return { err: "invalid_audience", description: error.message };
+    case "invalid_signature":
+    case "expired":
+      return { err: "authentication_failed", description: error.message };
+    default:
+      return { err: "invalid_request", description: error.message };
+  }
+}

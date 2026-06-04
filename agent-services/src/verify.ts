@@ -137,7 +137,12 @@ export async function verifyIdJag(
   return { ok: true, claims };
 }
 
-export type LogoutClaims = JWTPayload & {
+/**
+ * RFC 8417 Security Event Token (SET). Pushed by trusted providers to the
+ * service's `events_endpoint` to invalidate registrations and credentials
+ * tied to an upstream identity event.
+ */
+export type SecEventClaims = JWTPayload & {
   iss: string;
   sub: string;
   aud: string;
@@ -145,10 +150,10 @@ export type LogoutClaims = JWTPayload & {
   events: Record<string, unknown>;
 };
 
-export async function verifyLogoutJwt(
+export async function verifySecEventJwt(
   jwt: string,
 ): Promise<
-  { ok: true; claims: LogoutClaims } | { ok: false; error: VerifyError }
+  { ok: true; claims: SecEventClaims } | { ok: false; error: VerifyError }
 > {
   const iss = peekIssuer(jwt);
   if (!iss || !isTrustedIssuer(iss)) {
@@ -164,16 +169,36 @@ export async function verifyLogoutJwt(
     const res = await jwtVerify(jwt, getJwks(iss), {
       issuer: iss,
       audience: config.baseUrl,
-      typ: "logout+jwt",
+      typ: "secevent+jwt",
       clockTolerance: config.clockSkewSeconds,
     });
-    const claims = res.payload as LogoutClaims;
+    const claims = res.payload as SecEventClaims;
     if (!claims.jti || !claims.sub) {
       return {
         ok: false,
         error: {
           code: "invalid_request",
           message: "Missing required claim (jti or sub).",
+        },
+      };
+    }
+    /*
+     * RFC 8417 §2.1: `events` is REQUIRED and is a JSON object whose keys
+     * are event-type schema URIs. Reject anything that isn't a non-empty
+     * object so the dispatch step downstream has something real to match
+     * against.
+     */
+    if (
+      typeof claims.events !== "object" ||
+      claims.events === null ||
+      Array.isArray(claims.events) ||
+      Object.keys(claims.events).length === 0
+    ) {
+      return {
+        ok: false,
+        error: {
+          code: "invalid_request",
+          message: "SET must include a non-empty events claim (RFC 8417 §2.1).",
         },
       };
     }
@@ -193,6 +218,12 @@ export async function verifyLogoutJwt(
     return { ok: true, claims };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
+    if (/expired|exp/i.test(message)) {
+      return { ok: false, error: { code: "expired", message } };
+    }
+    if (/audience/i.test(message)) {
+      return { ok: false, error: { code: "invalid_audience", message } };
+    }
     return { ok: false, error: { code: "invalid_signature", message } };
   }
 }

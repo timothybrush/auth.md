@@ -103,7 +103,7 @@ To participate as a consumer service, you should:
 3. Host `/agent/identity` (and its `/claim` sub-endpoints) that dispatches on `type` and returns a service-signed `identity_assertion`
 4. Host `/oauth2/token` (RFC 7523 JWT-bearer) that exchanges the `identity_assertion` for an access_token
 5. Host `/oauth2/revoke` (RFC 7009) for agent-initiated credential revocation
-6. Accept provider-initiated logout tokens at the advertised `revocation_uri`
+6. Accept provider-initiated Security Event Tokens (RFC 8417) at the advertised `events_endpoint`
 7. Maintain a trust list of agent providers (for `identity_assertion`)
 8. Verify ID-JAG signatures against the provider's JWKS and enforce claim checks
 9. Record audit events for every state change in the flow
@@ -146,7 +146,7 @@ AS metadata:
     "skill": "https://service.example.com/auth.md",
     "identity_endpoint": "https://auth.service.example.com/agent/identity",
     "claim_endpoint": "https://auth.service.example.com/agent/identity/claim",
-    "revocation_uri": "https://auth.service.example.com/agent/auth/revoke",
+    "events_endpoint": "https://auth.service.example.com/agent/event/notify",
     "identity_types_supported": ["anonymous", "identity_assertion"],
     "identity_assertion": {
       "assertion_types_supported": [
@@ -161,7 +161,7 @@ AS metadata:
 }
 ```
 
-Top-level `issuer` / `token_endpoint` / `revocation_endpoint` / `grant_types_supported` follow [RFC 8414](https://datatracker.ietf.org/doc/html/rfc8414) (with `revocation_endpoint` per [RFC 7009](https://datatracker.ietf.org/doc/html/rfc7009)). The `agent_auth` block is a profile extension for the agent-auth–specific surface: the registration endpoint, the claim ceremony, and the revocation-receive endpoint.
+Top-level `issuer` / `token_endpoint` / `revocation_endpoint` / `grant_types_supported` follow [RFC 8414](https://datatracker.ietf.org/doc/html/rfc8414) (with `revocation_endpoint` per [RFC 7009](https://datatracker.ietf.org/doc/html/rfc7009)). The `agent_auth` block is a profile extension for the agent-auth–specific surface: the registration endpoint, the claim ceremony, and the [RFC 8935](https://datatracker.ietf.org/doc/html/rfc8935) SET receiver.
 
 Advertise the identity types and assertion types your service accepts. Anonymous is the simplest if you only support self-registration; ID-JAG is for trusted-provider integrations; the verified email assertion type is for agents that have a user email but no provider-signed assertion.
 
@@ -354,7 +354,7 @@ Implementation:
 - Return 200 even when the token is unknown or already revoked ([RFC 7009 §2.2](https://datatracker.ietf.org/doc/html/rfc7009#section-2.2) — prevents enumeration).
 - Return 400 with `{ "error": "invalid_request", "error_description": "..." }` only when the body itself is malformed.
 
-The agent's `identity_assertion` is unaffected — they can immediately re-call `/oauth2/token` to mint a fresh access_token. To kill the underlying registration, the provider uses the legacy logout-token mechanism at `revocation_uri` (see [Revocation](#revocation)).
+The agent's `identity_assertion` is unaffected — they can immediately re-call `/oauth2/token` to mint a fresh access_token. To kill the underlying registration, the provider POSTs a SET to the `events_endpoint` (see [Revocation](#revocation)).
 
 ### Verifying ID-JAGs
 
@@ -494,14 +494,21 @@ Implementation notes:
 
 ### Revocation
 
-Accept logout tokens at the `revocation_uri` advertised in your discovery document. The provider signs a [logout token](https://openid.net/specs/openid-connect-backchannel-1_0.html) referencing the delegation to revoke:
+Revocation has two distinct surfaces:
+
+1. **Agent or admin invalidating a specific credential** — RFC 7009 token revocation at the top-level `revocation_endpoint` (covered in [POST /oauth2/revoke](#post-oauth2revoke--rfc-7009-token-revocation)).
+2. **Provider notifying the service of an upstream identity event** — RFC 8935 push-based delivery of a [Security Event Token](https://datatracker.ietf.org/doc/html/rfc8417) to the `agent_auth.events_endpoint`.
+
+#### POST /agent/event/notify — RFC 8935 SET receiver
+
+Providers transmit a signed Security Event Token to deliver identity events (logout, unlink, etc.). The SET's `events` claim names one or more schema URIs identifying the event types in this envelope:
 
 ```
-POST /agent/auth/revoke HTTP/1.1
+POST /agent/event/notify HTTP/1.1
 Host: auth.service.example.com
-Content-Type: application/logout+jwt
+Content-Type: application/secevent+jwt
 
-{ "typ": "logout+jwt", "alg", "kid" }
+{ "typ": "secevent+jwt", "alg", "kid" }
 .
 {
   "iss": "https://api.agent-provider.example.com",
@@ -517,12 +524,15 @@ Content-Type: application/logout+jwt
 
 On receipt:
 
-1. Verify the logout token's signature against the issuer's JWKS (same trust path as ID-JAG verification).
-2. Enforce `jti` uniqueness for replay protection.
-3. Find all credentials issued for `(iss, sub, aud)` and invalidate them.
-4. Return 200 on success, 400 on verification failure.
+1. Verify the SET signature against the issuer's JWKS (same trust path as ID-JAG verification).
+2. Validate `iss` against the trust list, `aud` against your service, and enforce `jti` uniqueness for replay protection.
+3. Dispatch on each entry in the `events` claim — for the `identity-assertion-revoked` schema, find all credentials issued for `(iss, sub, aud)` and invalidate them. Unknown event schemas can be safely ignored ([RFC 8417 §2.2](https://datatracker.ietf.org/doc/html/rfc8417#section-2.2)).
+4. Return 202 Accepted on success, with no body.
+5. On failure, return 400 with `{ "err": "<code>", "description": "..." }` per [RFC 8935 §2.4](https://datatracker.ietf.org/doc/html/rfc8935#section-2.4). Defined error codes: `invalid_request`, `invalid_key`, `invalid_issuer`, `invalid_audience`, `authentication_failed`.
 
-In a future state, expect to extend this surface with [SET](https://datatracker.ietf.org/doc/html/rfc8417) / [CAEP](https://openid.net/specs/openid-caep-1_0-final.html) / RISC event communication for session changes beyond revocation, delivered via webhook or SSE.
+The same endpoint can accept additional event types in the future (account suspended, claims updated, etc.) by adding entries to your dispatch table — providers don't need to coordinate; the `events_supported` array in your discovery doc advertises which schemas you're prepared to handle.
+
+A future evolution of this surface is the OpenID [Shared Signals Framework](https://openid.net/specs/openid-sharedsignals-framework-1_0.html) — a stream-management protocol on top of RFC 8935 with subject subscriptions and polling. Today we accept push-only and don't expose stream management.
 
 ### Rate Limiting
 
@@ -547,7 +557,7 @@ Record the following state transitions for observability and incident response. 
 | `otp.generated`        | OTP minted for the claim view                               | `registration_id`                       |
 | `claim.confirmed`      | `/agent/identity/claim/complete` succeeds                   | `registration_id`, `claimed_by_user_id` |
 | `registration.expired` | Unclaimed registration past its TTL                         | `registration_id`                       |
-| `registration.revoked` | Logout token processed                                      | `registration_id`, `iss`, `sub`         |
+| `registration.revoked` | SET processed at `/agent/event/notify`                      | `registration_id`, `iss`, `sub`         |
 
 For ID-JAG flows, include `iss`, `sub`, `agent_platform`, and `agent_context_id` so operators can correlate with provider-side logs.
 
