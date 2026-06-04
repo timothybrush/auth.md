@@ -119,7 +119,7 @@ async function emitIdJagSuccess(
   );
   res.json({
     registration_id: registration.id,
-    registration_type: "agent-provider",
+    registration_type: "identity_assertion",
     identity_assertion: jwt,
     assertion_expires: expiresAt.toISOString(),
     scopes: config.scopesSupported,
@@ -169,7 +169,7 @@ async function handleIdJagStepUp(
       error_description:
         "This ID-JAG matches an existing account. Surface the user_code + verification_uri so the user can confirm linking the provider identity to their account.",
       registration_id: result.registration.id,
-      registration_type: "id-jag-step-up",
+      registration_type: "identity_assertion",
       claim_url: `${config.baseUrl}${config.claimEndpointPath}`,
       claim_token: result.claimTokenPlaintext,
       claim_token_expires: result.registration.claim!.expires_at.toISOString(),

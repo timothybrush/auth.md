@@ -181,7 +181,7 @@ Content-Type: application/json
 ```json
 {
   "registration_id": "reg_...",
-  "registration_type": "agent-provider",
+  "registration_type": "identity_assertion",
   "identity_assertion": "<service-signed JWT>",
   "assertion_expires": "2026-05-04T13:00:00.000Z",
   "scopes": ["api.read", "api.write"]

@@ -217,7 +217,7 @@ Clean-match response:
 ```json
 {
   "registration_id": "reg_...",
-  "registration_type": "agent-provider",
+  "registration_type": "identity_assertion",
   "identity_assertion": "<service-signed JWT>",
   "assertion_expires": "2026-05-04T13:00:00.000Z",
   "scopes": ["api.read", "api.write"]
@@ -261,7 +261,7 @@ WWW-Authenticate: AgentAuth error="interaction_required", error_description="...
   "error": "interaction_required",
   "error_description": "...",
   "registration_id": "reg_...",
-  "registration_type": "id-jag-step-up",
+  "registration_type": "identity_assertion",
   "claim_url": "/agent/identity/claim",
   "claim_token": "clm_...",
   "claim_token_expires": "...",
