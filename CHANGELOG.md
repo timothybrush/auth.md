@@ -2,7 +2,7 @@
 
 ## v0.4.0 (2026-06-04)
 
-Inverts the claim ceremony and consolidates polling onto the standard `/oauth2/token` endpoint. The service emails are gone — the agent surfaces the verification URL and `user_code` to the user, who signs in through the service's own browser-based session (reusing any existing session, SSO, MFA the service applies) and confirms the code on a service-owned page. Borrows the ceremony shape from [RFC 8628 device authorization](https://datatracker.ietf.org/doc/html/rfc8628) (`user_code`, `verification_uri`, `expires_in`, `interval`) without overloading the IANA `device_code` grant.
+Inverts the claim ceremony and consolidates polling onto the standard `/oauth2/token` endpoint. Service emails have been removed in favor of the agent surfacing the verification URL and `user_code` to the user, who signs in through the service's own browser-based session (reusing any existing session, SSO, MFA the service applies) and confirms the code on a service-owned page. This borrows the ceremony shape from [RFC 8628 device authorization](https://datatracker.ietf.org/doc/html/rfc8628) (`user_code`, `verification_uri`, `expires_in`, `interval`) without overloading the IANA `device_code` grant.
 
 ### Added
 
