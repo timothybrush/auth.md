@@ -178,7 +178,6 @@ Response (200):
     "user_code": "123456",
     "expires_in": 600,
     "verification_uri": "https://auth.service.example.com/login?return_to=%2Fclaim%3Fclaim_attempt_token%3D...",
-    "interval": 5,
     "interval": 5
   }
 }
