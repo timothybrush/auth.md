@@ -117,20 +117,14 @@ export class Registration {
 }
 
 /**
- * Cookie-bound user session for the service-owned /claim form. Distinct from
- * agent credentials — these never leave the user's browser.
+ * Cookie-bound user sessions for the service-owned /claim form are
+ * managed by express-session (configured in index.ts); no Map needed here.
  */
-export type Session = {
-  token: string;
-  user_id: string;
-  created_at: Date;
-};
 
 export const users = new Map<string, User>();
 export const credentials = new Map<string, Credential>();
 export const delegations = new Map<string, Delegation>();
 export const registrations = new Map<string, Registration>();
-export const sessions = new Map<string, Session>();
 export const seenJtis = new Map<string, number>();
 
 const seeded: User[] = [
@@ -168,28 +162,6 @@ export function createUser(input: Omit<User, "id">): User {
   const user: User = { ...input, id: `user_${randomUUID()}` };
   users.set(user.id, user);
   return user;
-}
-
-export function createSession(userId: string): Session {
-  const token = randomBytes(32).toString("base64url");
-  const session: Session = { token, user_id: userId, created_at: new Date() };
-  sessions.set(token, session);
-  return session;
-}
-
-export function findSession(token: string): Session | undefined {
-  const session = sessions.get(token);
-  if (!session) return undefined;
-  const ageMs = Date.now() - session.created_at.getTime();
-  if (ageMs > config.sessionTtlSeconds * 1000) {
-    sessions.delete(token);
-    return undefined;
-  }
-  return session;
-}
-
-export function destroySession(token: string): void {
-  sessions.delete(token);
 }
 
 export function delegationKey(iss: string, sub: string): string {

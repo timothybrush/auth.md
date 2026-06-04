@@ -1,27 +1,19 @@
 import { Router } from "express";
-import { config } from "../config.js";
 import { loginFormBody, parseBody } from "../schemas.js";
-import {
-  createSession,
-  createUser,
-  destroySession,
-  findSession,
-  findUserByEmail,
-  users,
-} from "../store.js";
+import { createUser, findUserByEmail, users } from "../store.js";
 
 /*
  * Mock IdP. In production this would be a real authentication system
  * (AuthKit, your homegrown sign-in, etc.). We need just enough here to issue
  * a cookie-bound session so the /claim form can identify the signed-in user.
+ * Session state is managed by express-session (see index.ts).
  */
 
 export const loginRouter = Router();
 
 loginRouter.get("/login", (req, res) => {
   const returnTo = sanitizeReturnTo(req.query.return_to);
-  const cookieToken = readSessionCookie(req);
-  if (cookieToken && findSession(cookieToken)) {
+  if (req.session.userId) {
     res.redirect(returnTo);
     return;
   }
@@ -50,28 +42,16 @@ loginRouter.post("/login", (req, res) => {
     user = createUser({ email, email_verified: true });
   }
 
-  const session = createSession(user.id);
-  res.cookie(config.sessionCookieName, session.token, {
-    httpOnly: true,
-    secure: process.env.NODE_ENV !== "development",
-    sameSite: "lax",
-    path: "/",
-    maxAge: config.sessionTtlSeconds * 1000,
-  });
+  req.session.userId = user.id;
   console.log(`[login] signed in user=${user.id} email=${user.email}`);
   res.redirect(returnTo);
 });
 
 loginRouter.post("/logout", (req, res) => {
-  const token = readSessionCookie(req);
-  if (token) destroySession(token);
-  res.clearCookie(config.sessionCookieName, { path: "/" });
-  res.redirect("/login");
+  req.session.destroy(() => {
+    res.redirect("/login");
+  });
 });
-
-function readSessionCookie(req: { cookies?: Record<string, string> }): string {
-  return req.cookies?.[config.sessionCookieName] ?? "";
-}
 
 /** Same-origin paths only. Anything else falls back to "/". */
 function sanitizeReturnTo(raw: unknown): string {

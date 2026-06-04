@@ -7,7 +7,6 @@ import {
   type User,
   completeClaim,
   findRegistrationByClaimViewHash,
-  findSession,
   sha256Hex,
   users,
 } from "../store.js";
@@ -188,13 +187,7 @@ function requireUser(
   res: Response,
   returnTo: string,
 ): User | undefined {
-  const token = req.cookies?.[config.sessionCookieName] ?? "";
-  const session = token ? findSession(token) : undefined;
-  if (!session) {
-    res.redirect(`/login?return_to=${encodeURIComponent(returnTo)}`);
-    return undefined;
-  }
-  const user = users.get(session.user_id);
+  const user = req.session.userId ? users.get(req.session.userId) : undefined;
   if (!user) {
     res.redirect(`/login?return_to=${encodeURIComponent(returnTo)}`);
     return undefined;

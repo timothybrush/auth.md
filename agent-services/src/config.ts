@@ -27,8 +27,12 @@ export const config = Object.freeze({
   pollIntervalSeconds: 5,
   /** Lifetime of the cookie-bound session minted at /login. */
   sessionTtlSeconds: 86400,
-  /** Name of the cookie holding the user session for the claim page. */
-  sessionCookieName: "service_session",
+  /**
+   * Secret for express-session cookie signing. In production this would be
+   * a high-entropy value held outside the repo; for the demo we accept a
+   * stable default so cookies survive dev-server restarts.
+   */
+  sessionSecret: process.env.SESSION_SECRET ?? "demo-secret-do-not-ship",
   clockSkewSeconds: 60,
   /** RFC 7523 JWT-bearer grant endpoint. */
   tokenEndpointPath: "/oauth2/token",

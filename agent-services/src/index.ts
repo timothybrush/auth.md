@@ -1,6 +1,6 @@
-import cookieParser from "cookie-parser";
 import cors from "cors";
 import express from "express";
+import session from "express-session";
 import { config } from "./config.js";
 import { initKeys } from "./keys.js";
 import { agentAuthRouter } from "./routes/agent-auth.js";
@@ -38,7 +38,24 @@ async function main() {
    * urlencoded. Agent API routes accept JSON only.
    */
   app.use(express.urlencoded({ extended: false }));
-  app.use(cookieParser());
+  /*
+   * express-session with the default in-memory store. Fine for this demo;
+   * production deployments should swap in a real store (Redis, Postgres,
+   * etc.) — the MemoryStore will log a warning at startup reminding you.
+   */
+  app.use(
+    session({
+      secret: config.sessionSecret,
+      resave: false,
+      saveUninitialized: false,
+      cookie: {
+        httpOnly: true,
+        secure: process.env.NODE_ENV !== "development",
+        sameSite: "lax",
+        maxAge: config.sessionTtlSeconds * 1000,
+      },
+    }),
+  );
   app.use(accessLog);
 
   app.use(homeRouter);
