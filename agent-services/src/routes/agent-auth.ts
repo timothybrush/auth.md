@@ -189,9 +189,17 @@ agentAuthRouter.post(config.claimEndpointPath, async (req, res) => {
     });
     return;
   }
+  /*
+   * Email is immutable once bound. For email_verification it's bound at
+   * registration time (from the agent's identity claim). For anonymous
+   * it's bound on the first /claim call; subsequent re-initiations must
+   * supply the same email — otherwise an agent could redirect the
+   * ceremony from the originally-bound user to a different account,
+   * defeating the wrong-account check in /claim.
+   */
   if (
-    registration.kind === "email_verification" &&
-    registration.claim?.email !== parsed.value.email
+    registration.claim?.email &&
+    registration.claim.email !== parsed.value.email
   ) {
     res.status(400).json({
       error: "email_mismatch",
