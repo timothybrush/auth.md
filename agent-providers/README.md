@@ -75,7 +75,10 @@ Discovery is two-hop:
      "issuer": "https://auth.service.example.com",
      "token_endpoint": "https://auth.service.example.com/oauth2/token",
      "revocation_endpoint": "https://auth.service.example.com/oauth2/revoke",
-     "grant_types_supported": ["urn:ietf:params:oauth:grant-type:jwt-bearer"],
+     "grant_types_supported": [
+       "urn:ietf:params:oauth:grant-type:jwt-bearer",
+       "urn:workos:agent-auth:grant-type:claim"
+     ],
 
      "agent_auth": {
        "skill": "https://service.example.com/auth.md",

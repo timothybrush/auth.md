@@ -35,18 +35,20 @@ export type Delegation = {
 export type RegistrationKind = "anonymous" | "email_verification" | "id_jag";
 
 /**
- * The user-facing leg of the claim ceremony. Tracks the OTP-view link sent
- * to the user and (once /attempt/challenge fires) the OTP that link reveals.
+ * The user-facing leg of the claim ceremony. Tracks the `claim_attempt_token`
+ * that binds the verification URL to this registration and the `user_code`
+ * the agent surfaces to the user. Naming follows RFC 8628 device
+ * authorization.
  */
 export type RegistrationClaimAttempt = {
   id: string;
+  /** Hash of the claim_attempt_token embedded in the verification URL. */
   view_token_hash: string;
   view_expires_at: Date;
-  otp?: {
-    hash: string;
-    generated_at: Date;
-    expires_at: Date;
-  };
+  /** Hash of the 6-digit user_code the agent surfaces to the user. */
+  user_code_hash: string;
+  user_code_generated_at: Date;
+  user_code_expires_at: Date;
 };
 
 /**
@@ -113,6 +115,11 @@ export class Registration {
     return "unclaimed";
   }
 }
+
+/**
+ * Cookie-bound user sessions for the service-owned /claim form are
+ * managed by express-session (configured in index.ts); no Map needed here.
+ */
 
 export const users = new Map<string, User>();
 export const credentials = new Map<string, Credential>();
@@ -300,19 +307,23 @@ export function createAnonymousRegistration(): {
 }
 
 /**
- * Email-verification registrations bundle the claim attempt: we send the
- * email immediately and the agent polls /agent/identity/claim/complete with
- * the OTP the user reads back. No separate /claim initiation needed.
+ * Email-verification registrations bundle the claim ceremony: the agent
+ * receives a `user_code` and `verification_uri` in the registration response
+ * and surfaces both to the user. The user signs in to the service, types the
+ * code on the claim page, and ownership transfers.
  */
 export function createEmailVerificationRegistration(input: { email: string }): {
   registration: Registration;
   claimTokenPlaintext: string;
   claimViewTokenPlaintext: string;
+  userCode: string;
+  userCodeExpiresAt: Date;
 } {
   const now = new Date();
   const registrationId = `reg_${randomBytes(16).toString("base64url")}`;
   const claimTokenPlaintext = `clm_${randomBytes(19).toString("base64url")}`;
   const claimViewTokenPlaintext = `cvt_${randomBytes(24).toString("base64url")}`;
+  const code = mintUserCode(now);
 
   const registration = new Registration({
     id: registrationId,
@@ -328,11 +339,20 @@ export function createEmailVerificationRegistration(input: { email: string }): {
         view_expires_at: new Date(
           now.getTime() + config.claimViewTokenTtlSeconds * 1000,
         ),
+        user_code_hash: code.hash,
+        user_code_generated_at: now,
+        user_code_expires_at: code.expiresAt,
       },
     },
   });
   registrations.set(registration.id, registration);
-  return { registration, claimTokenPlaintext, claimViewTokenPlaintext };
+  return {
+    registration,
+    claimTokenPlaintext,
+    claimViewTokenPlaintext,
+    userCode: code.plaintext,
+    userCodeExpiresAt: code.expiresAt,
+  };
 }
 
 function idJagRegistrationKey(iss: string, sub: string, aud: string): string {
@@ -394,15 +414,20 @@ export function findRegistrationByClaimViewHash(
   return undefined;
 }
 
-export function recordAnonymousClaimAttempt(
+export function recordClaimAttempt(
   registration: Registration,
   email: string,
-): string {
-  const now = new Date();
-  const plaintext = `cvt_${randomBytes(24).toString("base64url")}`;
+): {
+  claimViewTokenPlaintext: string;
+  userCode: string;
+  userCodeExpiresAt: Date;
+} {
   if (!registration.claim) {
     throw new Error("registration has no claim handle");
   }
+  const now = new Date();
+  const plaintext = `cvt_${randomBytes(24).toString("base64url")}`;
+  const code = mintUserCode(now);
   registration.claim.email = email;
   registration.claim.attempt = {
     id: `cla_${randomBytes(16).toString("base64url")}`,
@@ -410,31 +435,33 @@ export function recordAnonymousClaimAttempt(
     view_expires_at: new Date(
       now.getTime() + config.claimViewTokenTtlSeconds * 1000,
     ),
+    user_code_hash: code.hash,
+    user_code_generated_at: now,
+    user_code_expires_at: code.expiresAt,
   };
-  return plaintext;
+  return {
+    claimViewTokenPlaintext: plaintext,
+    userCode: code.plaintext,
+    userCodeExpiresAt: code.expiresAt,
+  };
 }
 
 /**
- * Mints a fresh OTP and overwrites any prior one. Refreshing the claim-view
- * page reissues a code; the previous code is no longer accepted.
+ * Mints a 6-digit user_code with its hash + expiry. Caller embeds the hash
+ * on the attempt; the plaintext is returned to the agent (and read by the
+ * user from the agent's UI).
  */
-export function generateOtpForRegistration(registration: Registration): {
-  otp: string;
+function mintUserCode(now: Date): {
+  plaintext: string;
+  hash: string;
   expiresAt: Date;
 } {
-  const attempt = registration.claim?.attempt;
-  if (!attempt) {
-    throw new Error("registration has no active claim attempt");
-  }
-  const now = new Date();
-  const otp = String(randomInt(0, 1_000_000)).padStart(6, "0");
-  const expiresAt = new Date(now.getTime() + config.otpTtlSeconds * 1000);
-  attempt.otp = {
-    hash: sha256Hex(otp),
-    generated_at: now,
-    expires_at: expiresAt,
+  const plaintext = String(randomInt(0, 1_000_000)).padStart(6, "0");
+  return {
+    plaintext,
+    hash: sha256Hex(plaintext),
+    expiresAt: new Date(now.getTime() + config.userCodeTtlSeconds * 1000),
   };
-  return { otp, expiresAt };
 }
 
 export type CompleteClaimResult =
@@ -442,16 +469,21 @@ export type CompleteClaimResult =
   | {
       ok: false;
       error:
-        | "otp_invalid"
-        | "otp_expired"
-        | "otp_not_generated"
+        | "user_code_invalid"
+        | "user_code_expired"
         | "previously_claimed"
         | "claim_expired";
     };
 
+/**
+ * Called by the user-facing `/claim` form handler after authenticating the
+ * user via the session cookie. The agent never reaches this code path —
+ * it polls `/oauth2/token` with the claim grant for the resulting status.
+ */
 export function completeClaim(
   registration: Registration,
-  otp: string,
+  userCode: string,
+  signedInUser: User,
 ): CompleteClaimResult {
   if (registration.status === "claimed") {
     return { ok: false, error: "previously_claimed" };
@@ -460,39 +492,37 @@ export function completeClaim(
     return { ok: false, error: "claim_expired" };
   }
   const attempt = registration.claim?.attempt;
-  if (!attempt?.otp) {
-    return { ok: false, error: "otp_not_generated" };
+  if (!attempt) {
+    return { ok: false, error: "claim_expired" };
   }
-  if (attempt.otp.expires_at.getTime() < Date.now()) {
-    return { ok: false, error: "otp_expired" };
+  if (attempt.user_code_expires_at.getTime() < Date.now()) {
+    return { ok: false, error: "user_code_expired" };
   }
-  if (sha256Hex(otp) !== attempt.otp.hash) {
-    return { ok: false, error: "otp_invalid" };
+  if (sha256Hex(userCode) !== attempt.user_code_hash) {
+    return { ok: false, error: "user_code_invalid" };
   }
 
-  const email = registration.claim!.email!;
-  let user = findUserByEmail(email);
-  if (!user) {
-    user = createUser({ email, email_verified: true });
-  }
-  registration.user_id = user.id;
+  registration.user_id = signedInUser.id;
   registration.claimed_at = new Date();
-  /* Clear claim handle: same registration can't be re-claimed. */
-  registration.claim = undefined;
+  /*
+   * Keep the claim handle around so the agent's poll can resolve the
+   * registration by claim_token after completion. `status === "claimed"`
+   * already prevents re-completion.
+   */
 
   if (registration.kind === "anonymous") {
     /*
-     * In-place scope upgrade: any access_tokens issued from this
-     * registration's pre-claim assertion remain valid; their scope set is
-     * widened to post_claim. The agent keeps using the same token.
+     * Revoke any pre-claim access_tokens. The agent's claim-grant poll on
+     * /oauth2/token will return a fresh post-claim access_token + v2
+     * identity_assertion; the pre-claim credentials are no longer the
+     * canonical handle.
      */
     for (const cred of credentials.values()) {
       if (cred.registration_id === registration.id && !cred.revoked) {
-        cred.user_id = user.id;
-        cred.scope = config.postClaimScopes;
+        cred.revoked = true;
       }
     }
   }
 
-  return { ok: true, registration, user };
+  return { ok: true, registration, user: signedInUser };
 }

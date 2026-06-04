@@ -120,7 +120,7 @@ function renderHtml(): string {
 
 <div class="tracks">
 <div class="track">
-<p class="track-header anon" id="track-a-header" hidden>Track A — Anonymous + OTP claim</p>
+<p class="track-header anon" id="track-a-header" hidden>Track A — Anonymous + claim handoff</p>
 
 <section id="step-3" class="track-anon" hidden>
   <h2><span class="num">3</span>Register anonymously</h2>
@@ -151,39 +151,34 @@ Content-Type: application/json
 </section>
 
 <section id="step-6" class="track-anon" hidden>
-  <h2><span class="num">6</span>Send the claim email</h2>
-  <p>The agent invites a human to take ownership. <code>POST /agent/identity/claim</code> records the request and sends an email containing a one-time URL (written to <code>agent-services/.mail/&lt;registration_id&gt;.html</code>, served at <code>/mail/&lt;registration_id&gt;.html</code>).</p>
+  <h2><span class="num">6</span>Initiate the claim ceremony</h2>
+  <p>The agent invites a human to take ownership. <code>POST /agent/identity/claim</code> returns a <code>user_code</code> (to surface to the user) and a <code>verification_uri</code> (where they sign in and type the code). Shape follows <a href="https://datatracker.ietf.org/doc/html/rfc8628" target="_blank">RFC 8628 device authorization</a>.</p>
   <label>Claiming user email
     <input id="anon-claim-email" value="alice@example.com">
   </label>
   <div class="label">Request</div>
   <div class="req" id="anon-claim-req"><pre></pre></div>
-  <button class="primary" type="button" data-action="anon-claim">Send claim email</button>
+  <button class="primary" type="button" data-action="anon-claim">Start ceremony</button>
   <div id="anon-claim-out"></div>
 </section>
 
 <section id="step-7" class="track-anon" hidden>
-  <h2><span class="num">7</span>User opens the email and reads the OTP</h2>
-  <p>The user clicks the link and lands on <code>/agent/identity/claim/view</code>. The page POSTs the attempt token to <code>/agent/identity/claim/attempt/challenge</code>, which mints a 6-digit OTP. They read the code back to the agent.</p>
-  <div id="anon-mail-link"></div>
+  <h2><span class="num">7</span>Surface the code to the user</h2>
+  <p>The agent shows the user the verification URL and the 6-digit code. The user opens the URL, signs in to the service, and types the code on the service-owned claim page. The code travels agent → user → service — it never goes back to the agent.</p>
+  <div id="anon-ceremony"></div>
 </section>
 
 <section id="step-8" class="track-anon" hidden>
-  <h2><span class="num">8</span>Complete the claim</h2>
-  <p>The agent POSTs the OTP to <code>/agent/identity/claim/complete</code>. No fresh credential is issued; the registration's scopes are upgraded in place.</p>
-  <label>OTP from user
-    <input id="anon-otp" class="otp" placeholder="123456" maxlength="6">
-  </label>
-  <div class="label">Request</div>
-  <div class="req" id="anon-complete-req"><pre></pre></div>
-  <button class="primary" type="button" data-action="anon-complete">Complete claim</button>
-  <div id="anon-complete-out"></div>
+  <h2><span class="num">8</span>Poll <code>/oauth2/token</code> with the claim grant</h2>
+  <p>Polling happens at the standard token endpoint with a profile-specific grant (<code>urn:workos:agent-auth:grant-type:claim</code>) — custom URN, so it doesn't collide with services that also implement standard RFC 8628 device auth. While the user is still in the ceremony: <code>{ "error": "authorization_pending" }</code>. On completion: a standard OAuth token response, with a fresh post-claim access_token plus a v2 <code>identity_assertion</code> (this one has the user's email populated, unlike the pre-claim v1).</p>
+  <button class="primary" type="button" data-action="anon-poll">Poll once</button>
+  <div id="anon-poll-out"></div>
 </section>
 
 <section id="step-9" class="track-anon" hidden>
-  <h2><span class="num">9</span>Re-exchange to pick up post-claim scopes</h2>
-  <p>The agent re-runs the JWT-bearer exchange with the same identity_assertion. The resulting access_token now carries the full post-claim scope set.</p>
-  <button class="primary" type="button" data-action="anon-call-post">Re-exchange and call</button>
+  <h2><span class="num">9</span>Call with the post-claim access_token</h2>
+  <p>The access_token from the claim grant has the full post-claim scope set. The pre-claim access_token was revoked at ceremony completion.</p>
+  <button class="primary" type="button" data-action="anon-call-post">Call /api/resource</button>
   <div id="anon-post-out"></div>
 </section>
 
@@ -194,7 +189,7 @@ Content-Type: application/json
 
 <section id="step-10" class="track-email" hidden>
   <h2><span class="num">10</span>Register with an email assertion</h2>
-  <p>The agent has the user's email but no provider-signed assertion. It POSTs <code>/agent/identity</code> with <code>assertion_type: verified_email</code>. The service mails the user immediately and returns a claim_token, but no assertion yet — the agent has to claim first.</p>
+  <p>The agent has the user's email but no provider-signed assertion. It POSTs <code>/agent/identity</code> with <code>assertion_type: verified_email</code>. The response bundles the ceremony block (<code>user_code</code>, <code>verification_uri</code>, <code>interval</code>) — no separate <code>/claim</code> call needed.</p>
   <label>User email
     <input id="email-assertion" value="alice@example.com">
   </label>
@@ -205,27 +200,22 @@ Content-Type: application/json
 </section>
 
 <section id="step-11" class="track-email" hidden>
-  <h2><span class="num">11</span>User opens the email and reads the OTP</h2>
-  <p>Same OTP page as Track A — the user reads the 6-digit code back to the agent.</p>
-  <div id="email-mail-link"></div>
+  <h2><span class="num">11</span>Surface the code to the user</h2>
+  <p>Same as Track A: the agent shows the user the verification URL and the 6-digit code. The user signs in to the service (as the asserted email) and types the code on the claim page.</p>
+  <div id="email-ceremony"></div>
 </section>
 
 <section id="step-12" class="track-email" hidden>
-  <h2><span class="num">12</span>Complete the claim, receive an identity_assertion</h2>
-  <p>Posting the OTP to <code>/agent/identity/claim/complete</code> mints a fresh service-signed identity_assertion for the now-bound user.</p>
-  <label>OTP from user
-    <input id="email-otp" class="otp" placeholder="123456" maxlength="6">
-  </label>
-  <div class="label">Request</div>
-  <div class="req" id="email-complete-req"><pre></pre></div>
-  <button class="primary" type="button" data-action="email-complete">Complete claim</button>
-  <div id="email-complete-out"></div>
+  <h2><span class="num">12</span>Poll <code>/oauth2/token</code> with the claim grant</h2>
+  <p>Same poll endpoint as Track A. While pending: <code>{ "error": "authorization_pending" }</code>. On completion: standard OAuth token response with a fresh access_token plus an <code>identity_assertion</code> (the agent uses this for jwt-bearer refreshes when the access_token expires).</p>
+  <button class="primary" type="button" data-action="email-poll">Poll once</button>
+  <div id="email-poll-out"></div>
 </section>
 
 <section id="step-13" class="track-email" hidden>
-  <h2><span class="num">13</span>Exchange the assertion and call</h2>
-  <p>The agent POSTs the identity_assertion to <code>/oauth2/token</code> for an access_token, then calls <code>/api/resource</code>.</p>
-  <button class="primary" type="button" data-action="email-call">Exchange and call</button>
+  <h2><span class="num">13</span>Call <code>/api/resource</code></h2>
+  <p>The access_token from the claim grant goes straight to the API. No re-exchange needed — the claim grant already returned a usable credential.</p>
+  <button class="primary" type="button" data-action="email-call">Call /api/resource</button>
   <div id="email-call-out"></div>
 </section>
 
@@ -357,14 +347,6 @@ function updateAnonClaimPreview() {
   document.querySelector("#anon-claim-req pre").textContent =
     "POST /agent/identity/claim\\nContent-Type: application/json\\n\\n" + jsonStr(body);
 }
-function updateAnonCompletePreview() {
-  const body = {
-    claim_token: abbrev(state.anon_claim_token),
-    otp: document.getElementById("anon-otp").value || "<otp>",
-  };
-  document.querySelector("#anon-complete-req pre").textContent =
-    "POST /agent/identity/claim/complete\\nContent-Type: application/json\\n\\n" + jsonStr(body);
-}
 function updateEmailRegisterPreview() {
   const body = {
     type: "identity_assertion",
@@ -374,29 +356,30 @@ function updateEmailRegisterPreview() {
   document.querySelector("#email-register-req pre").textContent =
     "POST /agent/identity\\nContent-Type: application/json\\n\\n" + jsonStr(body);
 }
-function updateEmailCompletePreview() {
-  const body = {
-    claim_token: abbrev(state.email_claim_token),
-    otp: document.getElementById("email-otp").value || "<otp>",
-  };
-  document.querySelector("#email-complete-req pre").textContent =
-    "POST /agent/identity/claim/complete\\nContent-Type: application/json\\n\\n" + jsonStr(body);
+
+function renderCeremony(containerId, ceremony) {
+  document.getElementById(containerId).innerHTML =
+    '<div class="note">' +
+    '<p style="margin: 0 0 .5rem; color: var(--brand-text);"><strong>Show the user:</strong></p>' +
+    '<p style="margin: 0 0 .25rem;"><a href="' + escapeHtml(ceremony.verification_uri) + '" target="_blank">' +
+      escapeHtml(ceremony.verification_uri) + '</a></p>' +
+    '<p style="margin: 0; font-family: ui-monospace, monospace; font-size: 1.4rem; letter-spacing: .3rem; color: var(--brand-text);">Code: ' +
+      escapeHtml(ceremony.user_code) + '</p>' +
+    '<p style="margin: .5rem 0 0; font-size: .8rem;">Expires in ' + ceremony.expires_in +
+      's. Poll interval: ' + ceremony.interval + 's.</p>' +
+    '</div>';
 }
 
 document.getElementById("assertion").addEventListener("input", updateExchangePreview);
 document.getElementById("anon-claim-email").addEventListener("input", updateAnonClaimPreview);
-document.getElementById("anon-otp").addEventListener("input", updateAnonCompletePreview);
 document.getElementById("email-assertion").addEventListener("input", updateEmailRegisterPreview);
-document.getElementById("email-otp").addEventListener("input", updateEmailCompletePreview);
 
 updateExchangePreview();
 updateTokenPreview();
 updateCallPreview();
 updateAnonExchangePreview();
 updateAnonClaimPreview();
-updateAnonCompletePreview();
 updateEmailRegisterPreview();
-updateEmailCompletePreview();
 
 document.body.addEventListener("click", (e) => {
   const a = e.target instanceof HTMLElement ? e.target.dataset.action : null;
@@ -408,10 +391,10 @@ document.body.addEventListener("click", (e) => {
   if (a === "anon-exchange") anonExchange();
   if (a === "anon-call-pre") anonCallPre();
   if (a === "anon-claim") anonClaim();
-  if (a === "anon-complete") anonComplete();
+  if (a === "anon-poll") anonPoll();
   if (a === "anon-call-post") anonCallPost();
   if (a === "email-register") emailRegister();
-  if (a === "email-complete") emailComplete();
+  if (a === "email-poll") emailPoll();
   if (a === "email-call") emailCall();
   if (a === "exchange") exchange();
   if (a === "token-exchange") tokenExchange();
@@ -464,7 +447,6 @@ async function anonRegister() {
   state.anon_registration_id = r.body.registration_id;
   updateAnonExchangePreview();
   updateAnonClaimPreview();
-  updateAnonCompletePreview();
   markDone("step-3");
   reveal("step-4");
 }
@@ -497,37 +479,28 @@ async function anonClaim() {
   const r = await jsonFetch("/agent/identity/claim", { method: "POST", body: JSON.stringify(body) });
   document.getElementById("anon-claim-out").innerHTML = resBlock(r.status, null, r.body, r.ok);
   if (!r.ok) return;
-  const mailUrl = "/mail/" + state.anon_registration_id + ".html";
-  document.getElementById("anon-mail-link").innerHTML =
-    '<div class="note"><a href="' + escapeHtml(mailUrl) + '" target="_blank">Open the simulated email</a> ' +
-    '— click the link inside, read the 6-digit OTP, then come back and paste it below.</div>';
+  renderCeremony("anon-ceremony", r.body.claim_attempt);
   markDone("step-6");
   reveal("step-7");
   document.getElementById("step-8").hidden = false;
 }
 
-async function anonComplete() {
-  const otp = document.getElementById("anon-otp").value.trim();
-  const body = { claim_token: state.anon_claim_token, otp };
-  const r = await jsonFetch("/agent/identity/claim/complete", { method: "POST", body: JSON.stringify(body) });
-  document.getElementById("anon-complete-out").innerHTML = resBlock(r.status, null, r.body, r.ok);
+async function anonPoll() {
+  const r = await formFetch("/oauth2/token", {
+    grant_type: "urn:workos:agent-auth:grant-type:claim",
+    claim_token: state.anon_claim_token,
+  });
+  document.getElementById("anon-poll-out").innerHTML = resBlock(r.status, null, r.body, r.ok);
   if (!r.ok) return;
+  /* Claim grant succeeded: response carries access_token + v2 identity_assertion. */
+  state.anon_access_token = r.body.access_token;
+  state.anon_identity_assertion = r.body.identity_assertion;
   markDone("step-7");
   markDone("step-8");
   reveal("step-9");
 }
 
 async function anonCallPost() {
-  /* Re-exchange the same identity_assertion to pick up post-claim scope. */
-  const exch = await formFetch("/oauth2/token", {
-    grant_type: "urn:ietf:params:oauth:grant-type:jwt-bearer",
-    assertion: state.anon_identity_assertion,
-  });
-  if (!exch.ok) {
-    document.getElementById("anon-post-out").innerHTML = resBlock(exch.status, null, exch.body, false);
-    return;
-  }
-  state.anon_access_token = exch.body.access_token;
   const r = await jsonFetch("/api/resource", {
     headers: { authorization: "Bearer " + state.anon_access_token },
   });
@@ -547,22 +520,20 @@ async function emailRegister() {
   if (!r.ok) return;
   state.email_claim_token = r.body.claim_token;
   state.email_registration_id = r.body.registration_id;
-  updateEmailCompletePreview();
-  const mailUrl = "/mail/" + state.email_registration_id + ".html";
-  document.getElementById("email-mail-link").innerHTML =
-    '<div class="note"><a href="' + escapeHtml(mailUrl) + '" target="_blank">Open the simulated email</a> ' +
-    '— click the link, read the 6-digit OTP, then come back and paste it below.</div>';
+  renderCeremony("email-ceremony", r.body.claim);
   markDone("step-10");
   reveal("step-11");
   document.getElementById("step-12").hidden = false;
 }
 
-async function emailComplete() {
-  const otp = document.getElementById("email-otp").value.trim();
-  const body = { claim_token: state.email_claim_token, otp };
-  const r = await jsonFetch("/agent/identity/claim/complete", { method: "POST", body: JSON.stringify(body) });
-  document.getElementById("email-complete-out").innerHTML = resBlock(r.status, null, r.body, r.ok);
+async function emailPoll() {
+  const r = await formFetch("/oauth2/token", {
+    grant_type: "urn:workos:agent-auth:grant-type:claim",
+    claim_token: state.email_claim_token,
+  });
+  document.getElementById("email-poll-out").innerHTML = resBlock(r.status, null, r.body, r.ok);
   if (!r.ok) return;
+  state.email_access_token = r.body.access_token;
   state.email_identity_assertion = r.body.identity_assertion;
   markDone("step-11");
   markDone("step-12");
@@ -570,15 +541,12 @@ async function emailComplete() {
 }
 
 async function emailCall() {
-  const exch = await formFetch("/oauth2/token", {
-    grant_type: "urn:ietf:params:oauth:grant-type:jwt-bearer",
-    assertion: state.email_identity_assertion,
-  });
-  if (!exch.ok) {
-    document.getElementById("email-call-out").innerHTML = resBlock(exch.status, null, exch.body, false);
-    return;
-  }
-  state.email_access_token = exch.body.access_token;
+  /*
+   * The claim grant already returned an access_token alongside the v2
+   * identity_assertion — just use it. (The identity_assertion is what the
+   * agent uses to mint future access_tokens via jwt-bearer once this one
+   * expires.)
+   */
   const r = await jsonFetch("/api/resource", {
     headers: { authorization: "Bearer " + state.email_access_token },
   });

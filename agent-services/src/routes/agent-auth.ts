@@ -1,24 +1,18 @@
 import express, { Router } from "express";
 import { config } from "../config.js";
-import { sendClaimViewEmail } from "../mail.js";
 import { matchOrProvision } from "../matcher.js";
 import {
   ASSERTION_TYPES,
   agentAuthBody,
   claimBody,
-  claimCompleteBody,
-  generateOtpBody,
   parseBody,
 } from "../schemas.js";
 import {
-  completeClaim,
   createAnonymousRegistration,
   createEmailVerificationRegistration,
   findOrCreateIdJagRegistration,
   findRegistrationByClaimHash,
-  findRegistrationByClaimViewHash,
-  generateOtpForRegistration,
-  recordAnonymousClaimAttempt,
+  recordClaimAttempt,
   revokeForDelegation,
   sha256Hex,
 } from "../store.js";
@@ -30,15 +24,17 @@ import {
 } from "../verify.js";
 
 /*
- * Agent-facing endpoints implementing the OTP-exchange flavor of the
- * agent-auth spec. The user-facing /agent/identity/claim/view endpoint at the
- * bottom of this file is also part of the spec — it's where the email link
- * lands and where the OTP is rendered.
+ * Agent-facing endpoints. The user-facing claim ceremony — the page where
+ * the user signs in and types the user_code — lives in routes/login.ts and
+ * routes/claim.ts. The agent never reaches those; it polls /oauth2/token
+ * with the claim grant (urn:workos:agent-auth:grant-type:claim). See
+ * routes/token.ts.
  *
- * All three flows (anonymous, identity_assertion+id_jag, identity_assertion+
- * email) terminate by returning a service-signed identity_assertion. The
- * agent then exchanges that assertion at /oauth2/token (RFC 7523 JWT-bearer)
- * for an access_token. No credentials are issued here.
+ * The ceremony block returned in registration responses (under `claim` for
+ * email-verification, `claim_attempt` for anonymous) borrows RFC 8628
+ * device-authorization shape, with `claim_attempt_token` embedded in
+ * `verification_uri` so the URL identifies the registration without
+ * leaking the user-typed `user_code`.
  */
 
 export const agentAuthRouter = Router();
@@ -123,21 +119,13 @@ async function handleEmailAssertion(
   body: { assertion: string },
   res: express.Response,
 ): Promise<void> {
-  const { registration, claimTokenPlaintext, claimViewTokenPlaintext } =
-    createEmailVerificationRegistration({ email: body.assertion });
-
-  /*
-   * Email-verification registrations bundle the claim ceremony — we send
-   * the OTP-view email immediately. The agent skips /agent/identity/claim
-   * and polls /complete with the OTP the user reads back.
-   */
-  const viewUrl = `${config.baseUrl}${config.claimEndpointPath}/view?token=${encodeURIComponent(claimViewTokenPlaintext)}`;
-  await sendClaimViewEmail({
-    registrationId: registration.id,
-    recipientEmail: body.assertion,
-    viewUrl,
-    expiresAt: registration.claim!.attempt!.view_expires_at,
-  });
+  const {
+    registration,
+    claimTokenPlaintext,
+    claimViewTokenPlaintext,
+    userCode,
+    userCodeExpiresAt,
+  } = createEmailVerificationRegistration({ email: body.assertion });
 
   console.log(
     `[agent-auth] email-verification registration=${registration.id} email=${body.assertion}`,
@@ -150,12 +138,20 @@ async function handleEmailAssertion(
     claim_token: claimTokenPlaintext,
     claim_token_expires: registration.claim!.expires_at.toISOString(),
     post_claim_scopes: config.postClaimScopes,
+    claim: buildCeremonyBlock({
+      claimViewTokenPlaintext,
+      userCode,
+      userCodeExpiresAt,
+    }),
   });
 }
 
 /*
- * Anonymous-only entry point. Email-verification registrations skip this —
- * their claim attempt is created in /agent/identity itself.
+ * Initiates or re-mints a claim ceremony. Two registration kinds reach here:
+ *   - anonymous: first initiation (binds the email) or refresh (after the
+ *     user_code window closed before the user could complete).
+ *   - email_verification: refresh only (the initial ceremony was minted at
+ *     /agent/identity); the supplied email must match the registration.
  */
 agentAuthRouter.post(config.claimEndpointPath, async (req, res) => {
   const parsed = parseBody(claimBody, req.body);
@@ -173,11 +169,10 @@ agentAuthRouter.post(config.claimEndpointPath, async (req, res) => {
     });
     return;
   }
-  if (registration.kind !== "anonymous") {
+  if (registration.kind === "id_jag") {
     res.status(409).json({
       error: "claimed_or_in_flight",
-      message:
-        "Email-verification registrations do not require an explicit /claim call.",
+      message: "ID-JAG registrations do not require a claim ceremony.",
     });
     return;
   }
@@ -194,41 +189,34 @@ agentAuthRouter.post(config.claimEndpointPath, async (req, res) => {
     });
     return;
   }
-
   /*
-   * Idempotent: if a claim attempt is already in flight (same email, view
-   * window still open), echo current state without resending the email. A
-   * same-email retry after the view window expires falls through and mints
-   * a fresh attempt below.
+   * Email is immutable once bound. For email_verification it's bound at
+   * registration time (from the agent's identity claim). For anonymous
+   * it's bound on the first /claim call; subsequent re-initiations must
+   * supply the same email — otherwise an agent could redirect the
+   * ceremony from the originally-bound user to a different account,
+   * defeating the wrong-account check in /claim.
    */
-  const inflight = registration.claim?.attempt;
   if (
-    registration.status === "pending_claim" &&
-    registration.claim?.email === parsed.value.email &&
-    inflight &&
-    inflight.view_expires_at.getTime() > Date.now()
+    registration.claim?.email &&
+    registration.claim.email !== parsed.value.email
   ) {
-    res.json({
-      registration_id: registration.id,
-      claim_attempt_id: inflight.id,
-      status: "initiated",
-      expires_at: inflight.view_expires_at.toISOString(),
+    res.status(400).json({
+      error: "email_mismatch",
+      message:
+        "The supplied email does not match the registration's bound email.",
     });
     return;
   }
 
-  const claimViewTokenPlaintext = recordAnonymousClaimAttempt(
-    registration,
-    parsed.value.email,
-  );
+  /*
+   * Mint a fresh ceremony (new claim_attempt_token + new user_code). For
+   * anonymous this binds the supplied email; for email-verification it refreshes
+   * an expired user_code without changing the bound email. Any prior URL
+   * stops working.
+   */
+  const fresh = recordClaimAttempt(registration, parsed.value.email);
   const attempt = registration.claim!.attempt!;
-  const viewUrl = `${config.baseUrl}${config.claimEndpointPath}/view?token=${encodeURIComponent(claimViewTokenPlaintext)}`;
-  await sendClaimViewEmail({
-    registrationId: registration.id,
-    recipientEmail: parsed.value.email,
-    viewUrl,
-    expiresAt: attempt.view_expires_at,
-  });
 
   console.log(
     `[agent-auth] claim initiated for registration=${registration.id} to=${parsed.value.email}`,
@@ -239,324 +227,48 @@ agentAuthRouter.post(config.claimEndpointPath, async (req, res) => {
     claim_attempt_id: attempt.id,
     status: "initiated",
     expires_at: attempt.view_expires_at.toISOString(),
+    claim_attempt: buildCeremonyBlock({
+      claimViewTokenPlaintext: fresh.claimViewTokenPlaintext,
+      userCode: fresh.userCode,
+      userCodeExpiresAt: fresh.userCodeExpiresAt,
+    }),
   });
 });
 
-/* Exchanges a claim_attempt_token for an OTP. */
-agentAuthRouter.post(
-  `${config.claimEndpointPath}/attempt/challenge`,
-  (req, res) => {
-    const parsed = parseBody(generateOtpBody, req.body);
-    if (!parsed.ok) {
-      res
-        .status(400)
-        .json({ error: "invalid_request", message: parsed.message });
-      return;
-    }
-    const registration = findRegistrationByClaimViewHash(
-      sha256Hex(parsed.value.claim_attempt_token),
-    );
-    if (!registration) {
-      res.status(410).json({
-        error: "claim_superseded",
-        message: "The claim attempt token is invalid or has been superseded.",
-      });
-      return;
-    }
-    if (registration.status === "claimed") {
-      res
-        .status(409)
-        .json({ error: "claim_completed", message: "Already claimed." });
-      return;
-    }
-    const attempt = registration.claim?.attempt;
-    if (!attempt || attempt.view_expires_at.getTime() < Date.now()) {
-      res
-        .status(410)
-        .json({ error: "claim_expired", message: "Claim window has closed." });
-      return;
-    }
-    const { otp, expiresAt } = generateOtpForRegistration(registration);
-    console.log(
-      `[agent-auth] generated otp for registration=${registration.id}`,
-    );
-    res.json({
-      type: "otp",
-      challenge: otp,
-      expires_at: expiresAt.toISOString(),
-    });
-  },
-);
+/*
+ * Polling moved to /oauth2/token with grant_type=urn:workos:agent-auth:
+ * grant-type:claim. The agent posts its claim_token there; while pending
+ * the response is { error: "authorization_pending" }, on completion the
+ * standard token response is returned plus an `identity_assertion`
+ * extension so the agent has a refresh path via jwt-bearer. See
+ * routes/token.ts.
+ */
 
-agentAuthRouter.post(
-  `${config.claimEndpointPath}/complete`,
-  async (req, res) => {
-    const parsed = parseBody(claimCompleteBody, req.body);
-    if (!parsed.ok) {
-      res
-        .status(400)
-        .json({ error: "invalid_request", message: parsed.message });
-      return;
-    }
-    const registration = findRegistrationByClaimHash(
-      sha256Hex(parsed.value.claim_token),
-    );
-    if (!registration) {
-      res.status(401).json({
-        error: "invalid_claim_token",
-        message: "The claim token is invalid.",
-      });
-      return;
-    }
-
-    const result = completeClaim(registration, parsed.value.otp);
-    if (!result.ok) {
-      const status = pickStatusForCompleteError(result.error);
-      res.status(status).json({
-        error: result.error,
-        message: humanCompleteError(result.error),
-      });
-      return;
-    }
-
-    console.log(
-      `[agent-auth] claim completed for registration=${result.registration.id}`,
-    );
-
-    /*
-     * Anonymous: no fresh assertion — the original is still valid; the agent
-     * re-exchanges it at /oauth2/token to pick up the upgraded post-claim
-     * scope set on its access_token.
-     *
-     * Email-verification: mint a fresh service-signed identity_assertion the
-     * agent exchanges at /oauth2/token for its first access_token.
-     */
-    if (result.registration.kind === "anonymous") {
-      res.json({ registration_id: result.registration.id, status: "claimed" });
-      return;
-    }
-
-    const { jwt, expiresAt } = await signServiceIdJag({
-      registration: result.registration,
-      email: result.user.email,
-      emailVerified: true,
-    });
-    res.json({
-      registration_id: result.registration.id,
-      status: "claimed",
-      identity_assertion: jwt,
-      assertion_expires: expiresAt.toISOString(),
-    });
-  },
-);
-
-function pickStatusForCompleteError(error: string): number {
-  switch (error) {
-    case "otp_invalid":
-      return 401;
-    case "otp_not_generated":
-      return 400;
-    case "otp_expired":
-    case "claim_expired":
-      return 410;
-    case "previously_claimed":
-      return 409;
-    default:
-      return 400;
-  }
-}
-
-function humanCompleteError(error: string): string {
-  switch (error) {
-    case "otp_invalid":
-      return "The provided OTP does not match the claim attempt.";
-    case "otp_not_generated":
-      return "No OTP has been generated for this claim. Open the email link first.";
-    case "otp_expired":
-      return "The OTP's exchange window has passed.";
-    case "claim_expired":
-      return "This registration has expired and cannot be claimed.";
-    case "previously_claimed":
-      return "This registration has already been claimed.";
-    default:
-      return error;
-  }
+function buildCeremonyBlock(input: {
+  claimViewTokenPlaintext: string;
+  userCode: string;
+  userCodeExpiresAt: Date;
+}): Record<string, unknown> {
+  return {
+    user_code: input.userCode,
+    expires_in: secondsUntil(input.userCodeExpiresAt),
+    verification_uri: buildVerificationUri(input.claimViewTokenPlaintext),
+    interval: config.pollIntervalSeconds,
+  };
 }
 
 /*
- * User-facing OTP-view page. The email link lands here; the page gates
- * OTP minting behind an explicit user click that POSTs to
- * /agent/identity/claim/attempt/challenge. In production this page is
- * typically gated by a user session to handle edge cases (like updating the
- * email on the claim) upfront instead of in the agent context.
+ * Routes the user through /login first (mock IdP). `return_to` carries the
+ * /claim path with the binding token. The agent never resolves this URL —
+ * the user opens it in their browser.
  */
-agentAuthRouter.get(`${config.claimEndpointPath}/view`, async (req, res) => {
-  const rawToken = req.query.token;
-  const token = typeof rawToken === "string" ? rawToken : "";
-  if (!token) {
-    res
-      .status(400)
-      .type("html")
-      .send(
-        renderClaimViewPage({
-          ok: false,
-          title: "Missing token",
-          message: "This link is missing a claim view token.",
-        }),
-      );
-    return;
-  }
-  const registration = findRegistrationByClaimViewHash(sha256Hex(token));
-  if (!registration) {
-    res
-      .status(404)
-      .type("html")
-      .send(
-        renderClaimViewPage({
-          ok: false,
-          title: "Link invalid",
-          message:
-            "This link is no longer valid — it may have been superseded, used, or expired.",
-        }),
-      );
-    return;
-  }
-  if (registration.status === "claimed") {
-    res
-      .status(200)
-      .type("html")
-      .send(
-        renderClaimViewPage({
-          ok: true,
-          title: "Already claimed",
-          message:
-            "This registration has already been claimed. You can close this tab.",
-        }),
-      );
-    return;
-  }
-  const attempt = registration.claim?.attempt;
-  if (!attempt || attempt.view_expires_at.getTime() < Date.now()) {
-    res
-      .status(410)
-      .type("html")
-      .send(
-        renderClaimViewPage({
-          ok: false,
-          title: "Link expired",
-          message:
-            "This link has expired. Ask the agent to start a new claim to receive a fresh email.",
-        }),
-      );
-    return;
-  }
-  console.log(
-    `[agent-auth] rendered claim-view page for registration=${registration.id}`,
-  );
-  res
-    .status(200)
-    .type("html")
-    .send(
-      renderClaimViewPage({
-        ok: true,
-        title: "Read this code back to the agent",
-        message: `The agent will ask you for a one-time code to confirm you're the owner of <code>${escapeHtml(registration.claim?.email ?? "")}</code>. Read the code below back to the agent — do not share it with anyone else.`,
-        claimAttemptToken: token,
-      }),
-    );
-});
-
-function renderClaimViewPage(input: {
-  ok: boolean;
-  title: string;
-  message: string;
-  claimAttemptToken?: string;
-}): string {
-  const headingColor = input.ok ? "var(--brand-primary)" : "var(--error)";
-  const challengeUrl = `${config.claimEndpointPath}/attempt/challenge`;
-  const otpBlock = input.claimAttemptToken
-    ? `
-<div class="otp-wrap">
-  <div id="otp-out" class="otp-loading">Loading…</div>
-  <div id="error-out" class="err" hidden></div>
-</div>
-<script>
-(function () {
-  var otpOut = document.getElementById("otp-out");
-  var errOut = document.getElementById("error-out");
-  var token = ${JSON.stringify(input.claimAttemptToken)};
-  fetch(${JSON.stringify(challengeUrl)}, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ claim_attempt_token: token }),
-  })
-    .then(function (resp) { return resp.json().then(function (data) { return { ok: resp.ok, data: data }; }); })
-    .then(function (r) {
-      if (!r.ok) {
-        otpOut.hidden = true;
-        errOut.textContent = r.data.message || r.data.error || "Could not load code.";
-        errOut.hidden = false;
-        return;
-      }
-      otpOut.className = "";
-      otpOut.textContent = "";
-      var otpDiv = document.createElement("div");
-      otpDiv.className = "otp";
-      otpDiv.textContent = r.data.challenge;
-      var metaDiv = document.createElement("div");
-      metaDiv.className = "otp-meta";
-      metaDiv.textContent = "Expires " + r.data.expires_at;
-      otpOut.appendChild(otpDiv);
-      otpOut.appendChild(metaDiv);
-    })
-    .catch(function () {
-      otpOut.hidden = true;
-      errOut.textContent = "Network error. Try refreshing the page.";
-      errOut.hidden = false;
-    });
-})();
-</script>`
-    : "";
-  return `<!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<title>${escapeHtml(input.title)}</title>
-<style>
-  :root {
-    --brand-primary: #6D6DF2;
-    --brand-text: #030527;
-    --brand-bg: #FFFFFF;
-    --error: #e55039;
-    --muted: rgba(3, 5, 39, .65);
-    --border: rgba(3, 5, 39, .12);
-    --surface-soft: rgba(3, 5, 39, .04);
-  }
-  body { font-family: system-ui, sans-serif; max-width: 32rem; margin: 4rem auto; padding: 0 1.5rem; line-height: 1.5; color: var(--brand-text); background: var(--brand-bg); text-align: center; }
-  h1 { color: ${headingColor}; }
-  p { color: var(--muted); }
-  code { background: var(--surface-soft); padding: .05rem .3rem; border-radius: .2rem; font-size: .9em; }
-  .otp-wrap { margin: 2rem auto; }
-  .otp { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 2.6rem; letter-spacing: .4rem; padding: 1rem 1.5rem; border: 1px solid var(--border); background: var(--surface-soft); border-radius: .5rem; display: inline-block; color: var(--brand-text); }
-  .otp-meta { color: var(--muted); font-size: .8rem; margin-top: .5rem; }
-  .otp-loading { color: var(--muted); font-size: .9rem; }
-  .err { color: var(--error); margin-top: 1rem; font-size: .9rem; }
-</style>
-</head>
-<body>
-<h1>${escapeHtml(input.title)}</h1>
-<p>${input.message}</p>${otpBlock}
-</body></html>`;
+function buildVerificationUri(claimAttemptToken: string): string {
+  const claimPath = `/claim?claim_attempt_token=${encodeURIComponent(claimAttemptToken)}`;
+  return `${config.baseUrl}/login?return_to=${encodeURIComponent(claimPath)}`;
 }
 
-function escapeHtml(s: string): string {
-  return s.replace(
-    /[&<>"']/g,
-    (c) =>
-      ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[
-        c
-      ]!,
-  );
+function secondsUntil(when: Date): number {
+  return Math.max(0, Math.floor((when.getTime() - Date.now()) / 1000));
 }
 
 /*

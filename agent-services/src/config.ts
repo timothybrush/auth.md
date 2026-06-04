@@ -21,7 +21,18 @@ export const config = Object.freeze({
   serviceAssertionTtlSeconds: 3600,
   anonymousTtlSeconds: 86400,
   claimViewTokenTtlSeconds: 600,
-  otpTtlSeconds: 600,
+  /** Lifetime of the user_code minted at ceremony start (RFC 8628). */
+  userCodeTtlSeconds: 600,
+  /** Recommended agent poll cadence (RFC 8628 `interval`). */
+  pollIntervalSeconds: 5,
+  /** Lifetime of the cookie-bound session minted at /login. */
+  sessionTtlSeconds: 86400,
+  /**
+   * Secret for express-session cookie signing. In production this would be
+   * a high-entropy value held outside the repo; for the demo we accept a
+   * stable default so cookies survive dev-server restarts.
+   */
+  sessionSecret: process.env.SESSION_SECRET ?? "demo-secret-do-not-ship",
   clockSkewSeconds: 60,
   /** RFC 7523 JWT-bearer grant endpoint. */
   tokenEndpointPath: "/oauth2/token",
@@ -34,7 +45,5 @@ export const config = Object.freeze({
   /** RFC 8935 SET receiver path (provider-pushed identity events). */
   eventsEndpointPath: "/agent/event/notify",
   corsOrigins: [providerUrl],
-  mailDir: ".mail",
-  mailUrlPath: "/mail",
   keyPath: ".keys/signing-key.json",
 });
