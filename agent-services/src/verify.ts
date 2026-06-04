@@ -170,6 +170,21 @@ export async function verifyIdJag(
       },
     };
   }
+  /*
+   * Reject `auth_time` set unreasonably in the future. Without this a
+   * compromised or malicious trusted issuer could mint tokens whose
+   * auth_time is years ahead, indefinitely sidestepping the freshness
+   * gate above. Allow only `clockSkewSeconds` of forward drift.
+   */
+  if (authAge < -config.clockSkewSeconds) {
+    return {
+      ok: false,
+      error: {
+        code: "auth_time_too_old",
+        message: `auth_time is ${-authAge}s in the future; clock skew tolerance is ${config.clockSkewSeconds}s. Re-mint the ID-JAG with a current auth_time.`,
+      },
+    };
+  }
 
   return { ok: true, claims };
 }

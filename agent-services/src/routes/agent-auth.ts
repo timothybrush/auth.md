@@ -8,6 +8,7 @@ import {
   parseBody,
 } from "../schemas.js";
 import {
+  type Registration,
   createAnonymousRegistration,
   createEmailVerificationRegistration,
   findOrCreateIdJagRegistration,
@@ -17,6 +18,7 @@ import {
   sha256Hex,
 } from "../store.js";
 import {
+  type IdJagClaims,
   type VerifyError,
   signServiceIdJag,
   verifyIdJag,
@@ -98,8 +100,14 @@ async function handleIdJagAssertion(
   if (result.kind !== "ready") {
     throw new Error("clean match returned non-ready result");
   }
-  const { registration } = result;
+  return emitIdJagSuccess(res, result.registration, claims);
+}
 
+async function emitIdJagSuccess(
+  res: express.Response,
+  registration: Registration,
+  claims: IdJagClaims,
+): Promise<void> {
   const { jwt, expiresAt } = await signServiceIdJag({
     registration,
     email: claims.email,
@@ -107,7 +115,7 @@ async function handleIdJagAssertion(
     amr: claims.amr,
   });
   console.log(
-    `[agent-auth] issued identity_assertion to user=${match.user.id} via iss=${claims.iss} sub=${claims.sub} registration=${registration.id}`,
+    `[agent-auth] issued identity_assertion to user=${registration.user_id} via iss=${claims.iss} sub=${claims.sub} registration=${registration.id}`,
   );
   res.json({
     registration_id: registration.id,
@@ -126,17 +134,11 @@ async function handleIdJagAssertion(
  * at the service, sees a provider-aware confirmation page, types the code,
  * and the next agent poll picks up the bound delegation.
  */
-function handleIdJagStepUp(
-  claims: {
-    iss: string;
-    sub: string;
-    aud: string;
-    email?: string;
-    phone_number?: string;
-  },
+async function handleIdJagStepUp(
+  claims: IdJagClaims,
   matchedEmail: string,
   res: express.Response,
-): void {
+): Promise<void> {
   const result = findOrCreateIdJagRegistration({
     iss: claims.iss,
     sub: claims.sub,
@@ -145,15 +147,11 @@ function handleIdJagStepUp(
   });
   if (result.kind === "ready") {
     /*
-     * Race with another step-up that completed first. Caller should retry
-     * — next presentation will hit the clean-match path.
+     * Race resolution: a concurrent step-up ceremony bound the delegation
+     * while this request was matching. Emit the same 200 + identity_assertion
+     * the clean-match path would, instead of asking the agent to retry.
      */
-    res.status(409).json({
-      error: "claimed_or_in_flight",
-      error_description:
-        "Delegation was just bound by a concurrent ceremony; re-present the ID-JAG.",
-    });
-    return;
+    return emitIdJagSuccess(res, result.registration, claims);
   }
 
   console.log(
