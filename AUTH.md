@@ -140,7 +140,7 @@ Content-Type: application/json
 
 The response has two shapes depending on whether the service already has a delegation on file for `(iss, sub)`.
 
-**Clean match** — `(iss, sub)` is known, or the service JIT-provisioned a fresh user (no email/phone collision with existing accounts):
+**No confirmation needed** — `(iss, sub)` is known, or the service JIT-provisioned a fresh user (no email/phone collision with existing accounts):
 
 ```json
 {
