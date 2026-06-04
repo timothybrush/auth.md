@@ -1,5 +1,30 @@
 # auth.md Changelog
 
+## v0.4.0 (2026-06-04)
+
+Inverts the claim ceremony and consolidates polling onto the standard `/oauth2/token` endpoint. The service emails are gone — the agent surfaces the verification URL and `user_code` to the user, who signs in through the service's own browser-based session (reusing any existing session, SSO, MFA the service applies) and confirms the code on a service-owned page. Borrows the ceremony shape from [RFC 8628 device authorization](https://datatracker.ietf.org/doc/html/rfc8628) (`user_code`, `verification_uri`, `expires_in`, `interval`) without overloading the IANA `device_code` grant.
+
+### Added
+
+- `urn:workos:agent-auth:grant-type:claim` grant at `/oauth2/token` — the agent polls here with the `claim_token` for ceremony completion. Returns `authorization_pending` while waiting, `expired_token` once the window closes, and a standard OAuth token response on success, extended with `identity_assertion` + `assertion_expires` so the agent has a refresh path. A profile-specific URN so services that also implement standard RFC 8628 device authorization at the same endpoint don't collide.
+- Registration responses now include a ceremony block — under `claim` for email-verification (returned with the registration) or under `claim_attempt` for anonymous (returned from `/agent/identity/claim`). Both carry `user_code`, `verification_uri`, `expires_in`, `interval`.
+- `/login` — service-owned mock IdP with a cookie-bound session.
+- `/claim` — service-owned, cookie-gated form where the user types the `user_code` to complete the ceremony.
+
+### Changed
+
+- Discovery `grant_types_supported` now lists both `urn:ietf:params:oauth:grant-type:jwt-bearer` and the new claim grant.
+- `POST /agent/identity/claim/complete` is now the form-action endpoint for `/claim` — the agent no longer calls it directly. Polling moved to `/oauth2/token` with the claim grant.
+- `verification_uri` carries a `claim_attempt_token` that binds the URL to a specific registration without leaking the user-typed `user_code`.
+- The anonymous `email` parameter on `POST /agent/identity/claim` binds the registration to a specific signed-in account — only that user can complete the ceremony at `/claim`, preventing third-party interception of the `user_code`. The wrong-account check fires whenever `claim_email` is set, covering both anonymous and email-verification kinds.
+- Anonymous claim completion **revokes** any pre-claim access_tokens the agent was holding. The canonical credential post-claim is the one returned by the claim grant.
+
+### Removed
+
+- `/agent/identity/claim/attempt/challenge` — `user_code` is minted at ceremony start now; no separate mint step.
+- `/agent/identity/claim/view` — polling moved to `/oauth2/token` with the claim grant.
+- The mail surface (`mail.ts`, `routes/mail.ts`, the `.mail/` outbox directory) — the agent already has the verification URL and `user_code`, so an out-of-band email channel adds nothing and is the part most vulnerable to phishing-by-agent.
+
 ## v0.3.0 (2026-06-03)
 
 Switches the provider-driven invalidation channel from OIDC Back-Channel Logout to [RFC 8417](https://datatracker.ietf.org/doc/html/rfc8417) Security Event Token push delivery per [RFC 8935](https://datatracker.ietf.org/doc/html/rfc8935). Same trust path as before (issuer JWKS, jti replay protection), with a wire format and event shape that generalizes beyond revocation.
