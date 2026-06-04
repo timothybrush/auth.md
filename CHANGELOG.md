@@ -2,22 +2,16 @@
 
 ## v0.5.0 (2026-06-04)
 
-Gates first-time linking of an ID-JAG to an existing account behind a user-confirmation ceremony, and rejects ID-JAGs with missing or stale `auth_time`. Without step-up, any trusted provider could mint an ID-JAG with `email_verified: true` for a victim's email and silently take over their account at the service. Without the `auth_time` gate, an agent could ride an indefinitely-stale upstream session.
+Gates first-time linking of an ID-JAG to an existing account behind a user-confirmation ceremony, and requires fresh `auth_time` on every ID-JAG. Without step-up, any trusted provider could mint an ID-JAG with `email_verified: true` for a victim's email and silently take over their account. Without the freshness gate, an agent could ride an indefinitely-stale upstream session.
 
 ### Added
 
-- `interaction_required` (401) from `/agent/identity` for ID-JAG flows when the ID-JAG matches an existing account by verified email/phone but no `(iss, sub)` delegation exists yet. Body carries the same RFC 8628-shaped ceremony block as verified-email registration; the agent surfaces `user_code` + `verification_uri` to the user, who signs in at the service and confirms the link on a provider-aware `/claim` page ("Link `<Provider>` to your account?").
-- `login_required` (401) from `/agent/identity` for ID-JAG flows when `auth_time` is missing, too old, or set unreasonably in the future. `WWW-Authenticate` carries `max_age`. The agent's recourse is at its provider (`prompt=login` or equivalent) — nothing the user can do at the service helps.
-- `config.idJagMaxAuthAgeSeconds` (default 3600s) — hard-required upper bound on the age of `auth_time` claims. Applied universally, including known `(iss, sub)` delegations, to prevent indefinite session piggy-backing.
-- Trust-list entries gain a `displayName` field — service-controlled copy rendered on `/claim` so a malicious provider can't pick its own UI string.
+- `interaction_required` (401) from `/agent/identity` when an ID-JAG matches an existing account by verified email/phone but no `(iss, sub)` delegation exists yet. Body carries the RFC 8628-shaped ceremony block; the agent surfaces `user_code` + `verification_uri` to the user, who signs in at the service and confirms the link.
+- `login_required` (401) from `/agent/identity` when `auth_time` is missing, older than the service's `max_age`, or set unreasonably in the future. `WWW-Authenticate` carries `max_age`. The agent's recourse is at its provider (`prompt=login` or equivalent) — nothing the user can do at the service helps.
 
 ### Changed
 
-- `matcher.ts` returns a discriminated `MatchResult` (`{ kind: "match" | "step_up_required" }`). Email/phone matches no longer silently bind delegations; they return `step_up_required` and let the route gate the binding via the ceremony.
-- `findOrCreateIdJagRegistration` unified into one function keyed on `(iss, sub, aud)` with a `context: { user } | { email }` discriminator. Same registration shape for clean-match and step-up — step-up is just the not-yet-claimed state of the same registration. `completeClaim` for `id_jag` registrations now calls `upsertDelegation` on success so the binding survives.
-- `verify.ts` rejects ID-JAGs whose `auth_time` is missing, older than `idJagMaxAuthAgeSeconds + clockSkewSeconds`, or further than `clockSkewSeconds` in the future. The future bound closes a session-piggybacking gap where a compromised trusted issuer could mint tokens with a far-future `auth_time` and bypass the freshness check.
-- `/claim` page renders provider-aware copy for ID-JAG step-up registrations ("Link `<Provider>` to your account?") using the service's trust-list `displayName`.
-- Race resolution at `/agent/identity` (ID-JAG step-up): when a concurrent ceremony binds the delegation while this request is matching, the response is now the same 200 + `identity_assertion` the clean-match path would emit, instead of a 409 the agent had to retry on.
+- ID-JAGs are now required to include a fresh `auth_time` claim. Tokens whose `auth_time` is missing, older than the service's `max_age` window, or further than the clock-skew tolerance in the future are rejected. Applied universally — including already-delegated `(iss, sub)` pairs — to prevent indefinite session piggy-backing.
 
 ## v0.4.0 (2026-06-04)
 
