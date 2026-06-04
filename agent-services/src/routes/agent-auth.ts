@@ -11,30 +11,34 @@ import {
   parseBody,
 } from "../schemas.js";
 import {
-  type Registration,
   completeClaim,
   createAnonymousRegistration,
   createEmailVerificationRegistration,
-  credentials,
+  findOrCreateIdJagRegistration,
   findRegistrationByClaimHash,
   findRegistrationByClaimViewHash,
   generateOtpForRegistration,
-  issueAccessToken,
-  issueApiKey,
   recordAnonymousClaimAttempt,
   revokeForDelegation,
   sha256Hex,
 } from "../store.js";
-import { verifyIdJag, verifyLogoutJwt } from "../verify.js";
+import { signServiceIdJag, verifyIdJag, verifyLogoutJwt } from "../verify.js";
 
-// Agent-facing endpoints implementing the OTP-exchange flavor of the
-// agent-auth spec. The user-facing /agent/auth/claim/view endpoint at the
-// bottom of this file is also part of the spec — it's where the email link
-// lands and where the OTP is rendered.
+/*
+ * Agent-facing endpoints implementing the OTP-exchange flavor of the
+ * agent-auth spec. The user-facing /agent/identity/claim/view endpoint at the
+ * bottom of this file is also part of the spec — it's where the email link
+ * lands and where the OTP is rendered.
+ *
+ * All three flows (anonymous, identity_assertion+id_jag, identity_assertion+
+ * email) terminate by returning a service-signed identity_assertion. The
+ * agent then exchanges that assertion at /oauth2/token (RFC 7523 JWT-bearer)
+ * for an access_token. No credentials are issued here.
+ */
 
 export const agentAuthRouter = Router();
 
-agentAuthRouter.post("/agent/auth", async (req, res) => {
+agentAuthRouter.post(config.identityEndpointPath, async (req, res) => {
   const parsed = parseBody(agentAuthBody, req.body);
   if (!parsed.ok) {
     res.status(400).json({ error: "invalid_request", message: parsed.message });
@@ -48,33 +52,26 @@ agentAuthRouter.post("/agent/auth", async (req, res) => {
     return handleIdJagAssertion(parsed.value, res);
   }
 
-  // type === "anonymous"
-  const { registration, credential, claimTokenPlaintext } =
-    createAnonymousRegistration({
-      requestedCredentialType: parsed.value.requested_credential_type,
-    });
+  const { registration, claimTokenPlaintext } = createAnonymousRegistration();
+  const { jwt, expiresAt } = await signServiceIdJag({ registration });
   console.log(
     `[agent-auth] registered anonymous agent registration=${registration.id}`,
   );
   res.json({
     registration_id: registration.id,
     registration_type: "anonymous",
-    credential_type: "api_key",
-    credential: credential.token,
-    credential_expires: credential.expires_at?.toISOString() ?? null,
-    scopes: credential.scope,
-    claim_url: `${config.baseUrl}/agent/auth/claim`,
+    identity_assertion: jwt,
+    assertion_expires: expiresAt.toISOString(),
+    pre_claim_scopes: config.preClaimScopes,
+    claim_url: `${config.baseUrl}${config.claimEndpointPath}`,
     claim_token: claimTokenPlaintext,
-    claim_token_expires: registration.expires_at.toISOString(),
+    claim_token_expires: registration.claim!.expires_at.toISOString(),
     post_claim_scopes: config.postClaimScopes,
   });
 });
 
 async function handleIdJagAssertion(
-  body: {
-    assertion: string;
-    requested_credential_type: "access_token" | "api_key";
-  },
+  body: { assertion: string },
   res: express.Response,
 ): Promise<void> {
   const verified = await verifyIdJag(body.assertion);
@@ -86,76 +83,55 @@ async function handleIdJagAssertion(
   }
   const { claims } = verified;
   const { user } = matchOrProvision(claims);
-  const scope = config.scopesSupported;
 
-  const registrationId = `reg_${sha256Hex(`${claims.iss}|${claims.sub}|${claims.aud}`).slice(0, 22)}`;
-
-  if (body.requested_credential_type === "api_key") {
-    const cred = issueApiKey({
-      userId: user.id,
-      scope,
-      source: "identity_assertion",
-      iss: claims.iss,
-      sub: claims.sub,
-      aud: claims.aud,
-    });
-    console.log(
-      `[agent-auth] issued api_key to user=${user.id} via iss=${claims.iss} sub=${claims.sub}`,
-    );
-    res.json({
-      registration_id: registrationId,
-      registration_type: "agent-provider",
-      credential_type: "api_key",
-      credential: cred.token,
-      credential_expires: cred.expires_at?.toISOString() ?? null,
-      scopes: scope,
-    });
-    return;
-  }
-
-  const cred = issueAccessToken({
-    userId: user.id,
-    scope,
-    source: "identity_assertion",
+  /*
+   * Ensure a registration exists for this (iss, sub, aud) so future
+   * credential lifecycle (revocation, audit, /token refresh) has a durable
+   * identity to anchor to. Idempotent across repeat presentations.
+   */
+  const registration = findOrCreateIdJagRegistration({
     iss: claims.iss,
     sub: claims.sub,
     aud: claims.aud,
+    userId: user.id,
+  });
+
+  const { jwt, expiresAt } = await signServiceIdJag({
+    registration,
+    email: claims.email,
+    emailVerified: claims.email_verified,
+    amr: claims.amr,
   });
   console.log(
-    `[agent-auth] issued access_token to user=${user.id} via iss=${claims.iss} sub=${claims.sub}`,
+    `[agent-auth] issued identity_assertion to user=${user.id} via iss=${claims.iss} sub=${claims.sub} registration=${registration.id}`,
   );
   res.json({
-    registration_id: registrationId,
+    registration_id: registration.id,
     registration_type: "agent-provider",
-    credential_type: "access_token",
-    credential: cred.token,
-    credential_expires: cred.expires_at?.toISOString() ?? null,
-    scopes: scope,
+    identity_assertion: jwt,
+    assertion_expires: expiresAt.toISOString(),
+    scopes: config.scopesSupported,
   });
 }
 
 async function handleEmailAssertion(
-  body: {
-    assertion: string;
-    requested_credential_type: "access_token" | "api_key";
-  },
+  body: { assertion: string },
   res: express.Response,
 ): Promise<void> {
   const { registration, claimTokenPlaintext, claimViewTokenPlaintext } =
-    createEmailVerificationRegistration({
-      email: body.assertion,
-      requestedCredentialType: body.requested_credential_type,
-    });
+    createEmailVerificationRegistration({ email: body.assertion });
 
-  // Email-verification registrations bundle the claim ceremony — we send
-  // the OTP-view email immediately. The agent skips /agent/auth/claim and
-  // polls /complete with the OTP the user reads back.
-  const viewUrl = `${config.baseUrl}/agent/auth/claim/view?token=${encodeURIComponent(claimViewTokenPlaintext)}`;
+  /*
+   * Email-verification registrations bundle the claim ceremony — we send
+   * the OTP-view email immediately. The agent skips /agent/identity/claim
+   * and polls /complete with the OTP the user reads back.
+   */
+  const viewUrl = `${config.baseUrl}${config.claimEndpointPath}/view?token=${encodeURIComponent(claimViewTokenPlaintext)}`;
   await sendClaimViewEmail({
     registrationId: registration.id,
     recipientEmail: body.assertion,
     viewUrl,
-    expiresAt: registration.claim_view_expires_at!,
+    expiresAt: registration.claim!.attempt!.view_expires_at,
   });
 
   console.log(
@@ -165,16 +141,18 @@ async function handleEmailAssertion(
   res.json({
     registration_id: registration.id,
     registration_type: "email-verification",
-    claim_url: `${config.baseUrl}/agent/auth/claim`,
+    claim_url: `${config.baseUrl}${config.claimEndpointPath}`,
     claim_token: claimTokenPlaintext,
-    claim_token_expires: registration.expires_at.toISOString(),
+    claim_token_expires: registration.claim!.expires_at.toISOString(),
     post_claim_scopes: config.postClaimScopes,
   });
 }
 
-// Anonymous-only entry point. Email-verification registrations skip this —
-// their claim attempt is created in /agent/auth itself.
-agentAuthRouter.post("/agent/auth/claim", async (req, res) => {
+/*
+ * Anonymous-only entry point. Email-verification registrations skip this —
+ * their claim attempt is created in /agent/identity itself.
+ */
+agentAuthRouter.post(config.claimEndpointPath, async (req, res) => {
   const parsed = parseBody(claimBody, req.body);
   if (!parsed.ok) {
     res.status(400).json({ error: "invalid_request", message: parsed.message });
@@ -198,12 +176,7 @@ agentAuthRouter.post("/agent/auth/claim", async (req, res) => {
     });
     return;
   }
-  if (registration.expires_at.getTime() < Date.now()) {
-    registration.status = "expired";
-    if (registration.credential_token) {
-      const cred = credentials.get(registration.credential_token);
-      if (cred) cred.revoked = true;
-    }
+  if (registration.status === "expired") {
     res
       .status(410)
       .json({ error: "claim_expired", message: "Registration has expired." });
@@ -217,21 +190,24 @@ agentAuthRouter.post("/agent/auth/claim", async (req, res) => {
     return;
   }
 
-  // Idempotent: if a claim attempt is already in flight (same email, view
-  // window still open), echo current state without resending the email. A
-  // same-email retry after the view window expires falls through and mints
-  // a fresh attempt below.
+  /*
+   * Idempotent: if a claim attempt is already in flight (same email, view
+   * window still open), echo current state without resending the email. A
+   * same-email retry after the view window expires falls through and mints
+   * a fresh attempt below.
+   */
+  const inflight = registration.claim?.attempt;
   if (
     registration.status === "pending_claim" &&
-    registration.claim_email === parsed.value.email &&
-    registration.claim_view_expires_at &&
-    registration.claim_view_expires_at.getTime() > Date.now()
+    registration.claim?.email === parsed.value.email &&
+    inflight &&
+    inflight.view_expires_at.getTime() > Date.now()
   ) {
     res.json({
       registration_id: registration.id,
-      claim_attempt_id: registration.claim_attempt_id!,
+      claim_attempt_id: inflight.id,
       status: "initiated",
-      expires_at: registration.claim_view_expires_at.toISOString(),
+      expires_at: inflight.view_expires_at.toISOString(),
     });
     return;
   }
@@ -240,12 +216,13 @@ agentAuthRouter.post("/agent/auth/claim", async (req, res) => {
     registration,
     parsed.value.email,
   );
-  const viewUrl = `${config.baseUrl}/agent/auth/claim/view?token=${encodeURIComponent(claimViewTokenPlaintext)}`;
+  const attempt = registration.claim!.attempt!;
+  const viewUrl = `${config.baseUrl}${config.claimEndpointPath}/view?token=${encodeURIComponent(claimViewTokenPlaintext)}`;
   await sendClaimViewEmail({
     registrationId: registration.id,
     recipientEmail: parsed.value.email,
     viewUrl,
-    expiresAt: registration.claim_view_expires_at!,
+    expiresAt: attempt.view_expires_at,
   });
 
   console.log(
@@ -254,85 +231,119 @@ agentAuthRouter.post("/agent/auth/claim", async (req, res) => {
 
   res.json({
     registration_id: registration.id,
-    claim_attempt_id: registration.id,
+    claim_attempt_id: attempt.id,
     status: "initiated",
-    expires_at: registration.claim_view_expires_at!.toISOString(),
+    expires_at: attempt.view_expires_at.toISOString(),
   });
 });
 
-// Exchanges a claim_attempt_token for an OTP.
-agentAuthRouter.post("/agent/auth/claim/attempt/challenge", (req, res) => {
-  const parsed = parseBody(generateOtpBody, req.body);
-  if (!parsed.ok) {
-    res.status(400).json({ error: "invalid_request", message: parsed.message });
-    return;
-  }
-  const registration = findRegistrationByClaimViewHash(
-    sha256Hex(parsed.value.claim_attempt_token),
-  );
-  if (!registration) {
-    res.status(410).json({
-      error: "claim_superseded",
-      message: "The claim attempt token is invalid or has been superseded.",
+/* Exchanges a claim_attempt_token for an OTP. */
+agentAuthRouter.post(
+  `${config.claimEndpointPath}/attempt/challenge`,
+  (req, res) => {
+    const parsed = parseBody(generateOtpBody, req.body);
+    if (!parsed.ok) {
+      res
+        .status(400)
+        .json({ error: "invalid_request", message: parsed.message });
+      return;
+    }
+    const registration = findRegistrationByClaimViewHash(
+      sha256Hex(parsed.value.claim_attempt_token),
+    );
+    if (!registration) {
+      res.status(410).json({
+        error: "claim_superseded",
+        message: "The claim attempt token is invalid or has been superseded.",
+      });
+      return;
+    }
+    if (registration.status === "claimed") {
+      res
+        .status(409)
+        .json({ error: "claim_completed", message: "Already claimed." });
+      return;
+    }
+    const attempt = registration.claim?.attempt;
+    if (!attempt || attempt.view_expires_at.getTime() < Date.now()) {
+      res
+        .status(410)
+        .json({ error: "claim_expired", message: "Claim window has closed." });
+      return;
+    }
+    const { otp, expiresAt } = generateOtpForRegistration(registration);
+    console.log(
+      `[agent-auth] generated otp for registration=${registration.id}`,
+    );
+    res.json({
+      type: "otp",
+      challenge: otp,
+      expires_at: expiresAt.toISOString(),
     });
-    return;
-  }
-  if (registration.status === "claimed") {
-    res
-      .status(409)
-      .json({ error: "claim_completed", message: "Already claimed." });
-    return;
-  }
-  if (
-    !registration.claim_view_expires_at ||
-    registration.claim_view_expires_at.getTime() < Date.now()
-  ) {
-    res
-      .status(410)
-      .json({ error: "claim_expired", message: "Claim window has closed." });
-    return;
-  }
-  const { otp, expiresAt } = generateOtpForRegistration(registration);
-  console.log(`[agent-auth] generated otp for registration=${registration.id}`);
-  res.json({
-    type: "otp",
-    challenge: otp,
-    expires_at: expiresAt.toISOString(),
-  });
-});
+  },
+);
 
-agentAuthRouter.post("/agent/auth/claim/complete", (req, res) => {
-  const parsed = parseBody(claimCompleteBody, req.body);
-  if (!parsed.ok) {
-    res.status(400).json({ error: "invalid_request", message: parsed.message });
-    return;
-  }
-  const registration = findRegistrationByClaimHash(
-    sha256Hex(parsed.value.claim_token),
-  );
-  if (!registration) {
-    res.status(401).json({
-      error: "invalid_claim_token",
-      message: "The claim token is invalid.",
+agentAuthRouter.post(
+  `${config.claimEndpointPath}/complete`,
+  async (req, res) => {
+    const parsed = parseBody(claimCompleteBody, req.body);
+    if (!parsed.ok) {
+      res
+        .status(400)
+        .json({ error: "invalid_request", message: parsed.message });
+      return;
+    }
+    const registration = findRegistrationByClaimHash(
+      sha256Hex(parsed.value.claim_token),
+    );
+    if (!registration) {
+      res.status(401).json({
+        error: "invalid_claim_token",
+        message: "The claim token is invalid.",
+      });
+      return;
+    }
+
+    const result = completeClaim(registration, parsed.value.otp);
+    if (!result.ok) {
+      const status = pickStatusForCompleteError(result.error);
+      res.status(status).json({
+        error: result.error,
+        message: humanCompleteError(result.error),
+      });
+      return;
+    }
+
+    console.log(
+      `[agent-auth] claim completed for registration=${result.registration.id}`,
+    );
+
+    /*
+     * Anonymous: no fresh assertion — the original is still valid; the agent
+     * re-exchanges it at /oauth2/token to pick up the upgraded post-claim
+     * scope set on its access_token.
+     *
+     * Email-verification: mint a fresh service-signed identity_assertion the
+     * agent exchanges at /oauth2/token for its first access_token.
+     */
+    if (result.registration.kind === "anonymous") {
+      res.json({ registration_id: result.registration.id, status: "claimed" });
+      return;
+    }
+
+    const { jwt, expiresAt } = await signServiceIdJag({
+      registration: result.registration,
+      email: result.user.email,
+      emailVerified: true,
     });
-    return;
-  }
-
-  const result = completeClaim(registration, parsed.value.otp);
-  if (!result.ok) {
-    const status = pickStatusForCompleteError(result.error);
-    res
-      .status(status)
-      .json({ error: result.error, message: humanCompleteError(result.error) });
-    return;
-  }
-
-  console.log(
-    `[agent-auth] claim completed for registration=${result.registration.id}`,
-  );
-
-  res.json(buildCompleteResponse(result.registration, result.credential));
-});
+    res.json({
+      registration_id: result.registration.id,
+      status: "claimed",
+      identity_assertion: jwt,
+      assertion_expires: expiresAt.toISOString(),
+    });
+  },
+);
 
 function pickStatusForCompleteError(error: string): number {
   switch (error) {
@@ -367,32 +378,14 @@ function humanCompleteError(error: string): string {
   }
 }
 
-function buildCompleteResponse(
-  registration: Registration,
-  credential: ReturnType<typeof issueApiKey> | undefined,
-): Record<string, unknown> {
-  const base: Record<string, unknown> = {
-    registration_id: registration.id,
-    status: "claimed",
-  };
-  // Only email-verification registrations receive a fresh credential at
-  // /complete. Anonymous registrations get an in-place scope upgrade on
-  // their existing API key — same key, wider scopes.
-  if (credential && registration.kind === "email_verification") {
-    base.credential_type = credential.type;
-    base.credential = credential.token;
-    base.credential_expires = credential.expires_at?.toISOString() ?? null;
-    base.scopes = credential.scope;
-  }
-  return base;
-}
-
-// User-facing OTP-view page. The email link lands here; the page gates
-// OTP minting behind an explicit user click that POSTs to
-// /agent/auth/claim/attempt/challenge. In production this page is typically
-// gated by a user session to handle edge cases (like updating the email on
-// the claim) upfront instead of in the agent context.
-agentAuthRouter.get("/agent/auth/claim/view", async (req, res) => {
+/*
+ * User-facing OTP-view page. The email link lands here; the page gates
+ * OTP minting behind an explicit user click that POSTs to
+ * /agent/identity/claim/attempt/challenge. In production this page is
+ * typically gated by a user session to handle edge cases (like updating the
+ * email on the claim) upfront instead of in the agent context.
+ */
+agentAuthRouter.get(`${config.claimEndpointPath}/view`, async (req, res) => {
   const rawToken = req.query.token;
   const token = typeof rawToken === "string" ? rawToken : "";
   if (!token) {
@@ -437,10 +430,8 @@ agentAuthRouter.get("/agent/auth/claim/view", async (req, res) => {
       );
     return;
   }
-  if (
-    !registration.claim_view_expires_at ||
-    registration.claim_view_expires_at.getTime() < Date.now()
-  ) {
+  const attempt = registration.claim?.attempt;
+  if (!attempt || attempt.view_expires_at.getTime() < Date.now()) {
     res
       .status(410)
       .type("html")
@@ -464,7 +455,7 @@ agentAuthRouter.get("/agent/auth/claim/view", async (req, res) => {
       renderClaimViewPage({
         ok: true,
         title: "Read this code back to the agent",
-        message: `The agent will ask you for a one-time code to confirm you're the owner of <code>${escapeHtml(registration.claim_email ?? "")}</code>. Read the code below back to the agent — do not share it with anyone else.`,
+        message: `The agent will ask you for a one-time code to confirm you're the owner of <code>${escapeHtml(registration.claim?.email ?? "")}</code>. Read the code below back to the agent — do not share it with anyone else.`,
         claimAttemptToken: token,
       }),
     );
@@ -477,6 +468,7 @@ function renderClaimViewPage(input: {
   claimAttemptToken?: string;
 }): string {
   const headingColor = input.ok ? "var(--brand-primary)" : "var(--error)";
+  const challengeUrl = `${config.claimEndpointPath}/attempt/challenge`;
   const otpBlock = input.claimAttemptToken
     ? `
 <div class="otp-wrap">
@@ -488,7 +480,7 @@ function renderClaimViewPage(input: {
   var otpOut = document.getElementById("otp-out");
   var errOut = document.getElementById("error-out");
   var token = ${JSON.stringify(input.claimAttemptToken)};
-  fetch("/agent/auth/claim/attempt/challenge", {
+  fetch(${JSON.stringify(challengeUrl)}, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ claim_attempt_token: token }),
@@ -563,7 +555,7 @@ function escapeHtml(s: string): string {
 }
 
 agentAuthRouter.post(
-  "/agent/auth/revoke",
+  config.revocationUriPath,
   express.text({ type: "application/logout+jwt" }),
   async (req, res) => {
     const token = typeof req.body === "string" ? req.body.trim() : "";

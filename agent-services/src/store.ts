@@ -10,11 +10,8 @@ export type User = {
   name?: string;
 };
 
-export type CredentialType = "access_token" | "api_key";
-
 export type Credential = {
   token: string;
-  type: CredentialType;
   user_id?: string;
   scope: string[];
   issued_at: Date;
@@ -35,41 +32,87 @@ export type Delegation = {
   last_seen: Date;
 };
 
-export type RegistrationKind = "anonymous" | "email_verification";
+export type RegistrationKind = "anonymous" | "email_verification" | "id_jag";
 
-export type Registration = {
+/**
+ * The user-facing leg of the claim ceremony. Tracks the OTP-view link sent
+ * to the user and (once /attempt/challenge fires) the OTP that link reveals.
+ */
+export type RegistrationClaimAttempt = {
+  id: string;
+  view_token_hash: string;
+  view_expires_at: Date;
+  otp?: {
+    hash: string;
+    generated_at: Date;
+    expires_at: Date;
+  };
+};
+
+/**
+ * The agent-facing leg of the claim ceremony. The agent holds the claim
+ * token; the email recipient holds the view token (inside the attempt). For
+ * anonymous registrations the email/attempt aren't populated until the agent
+ * initiates claim via /agent/identity/claim.
+ */
+export type RegistrationClaim = {
+  token_hash: string;
+  email?: string;
+  expires_at: Date;
+  attempt?: RegistrationClaimAttempt;
+};
+
+/**
+ * The (iss, sub, aud) of the original provider ID-JAG. Present on id_jag
+ * registrations so that future credential lifecycle (revocation, audit,
+ * /token refresh) has a durable identity to anchor to.
+ */
+export type RegistrationIdJag = {
+  iss: string;
+  sub: string;
+  aud: string;
+};
+
+export class Registration {
   id: string;
   kind: RegistrationKind;
   user_id?: string;
-  // Anonymous registrations get a credential at registration time. Email-
-  // verification registrations get one only on /complete.
-  credential_token?: string;
-  // The credential type the agent asked for at registration time. Persisted
-  // for email_verification so /complete can mint the right type.
-  requested_credential_type: CredentialType;
-  // Hash of the agent-side claim_token returned at /agent-auth.
-  claim_token_hash: string;
-  // The user-facing ceremony email is keyed by the claim_view_token. For
-  // anonymous, it's set at /agent-auth/claim. For email_verification, it's
-  // set at /agent-auth itself.
-  claim_view_token_hash?: string;
-  claim_view_expires_at?: Date;
-  // For email_verification, captured at /agent-auth. For anonymous, captured
-  // at /agent-auth/claim.
-  claim_email?: string;
-  // Identifies the current (or last) claim attempt. Rotates each time a fresh
-  // attempt is initiated — including same-email retries after a prior
-  // attempt expired.
-  claim_attempt_id?: string;
-  // Stamped when /generate-otp first mints an OTP for this registration.
-  otp_hash?: string;
-  otp_expires_at?: Date;
-  otp_generated_at?: Date;
-  status: "unclaimed" | "pending_claim" | "claimed" | "expired";
   created_at: Date;
-  expires_at: Date;
   claimed_at?: Date;
-};
+  claim?: RegistrationClaim;
+  id_jag?: RegistrationIdJag;
+
+  constructor(init: {
+    id: string;
+    kind: RegistrationKind;
+    created_at: Date;
+    user_id?: string;
+    claimed_at?: Date;
+    claim?: RegistrationClaim;
+    id_jag?: RegistrationIdJag;
+  }) {
+    this.id = init.id;
+    this.kind = init.kind;
+    this.user_id = init.user_id;
+    this.created_at = init.created_at;
+    this.claimed_at = init.claimed_at;
+    this.claim = init.claim;
+    this.id_jag = init.id_jag;
+  }
+
+  /**
+   * Derived from the registration's other fields — no separate `status`
+   * column to keep in sync, no sweeper job needed to mark things expired.
+   */
+  get status(): "unclaimed" | "pending_claim" | "claimed" | "expired" {
+    if (this.claimed_at) return "claimed";
+    if (this.claim && this.claim.expires_at.getTime() < Date.now()) {
+      return "expired";
+    }
+    if (this.claim?.attempt) return "pending_claim";
+    return "unclaimed";
+  }
+}
 
 export const users = new Map<string, User>();
 export const credentials = new Map<string, Credential>();
@@ -153,9 +196,10 @@ function randomToken(prefix: string, bytes = 24): string {
 }
 
 export function issueAccessToken(input: {
-  userId: string;
+  /** Optional: anonymous registrations (pre-claim) have no bound user yet. */
+  userId?: string;
   scope: string[];
-  source: "identity_assertion" | "email_verification";
+  source: "identity_assertion" | "email_verification" | "anonymous";
   iss?: string;
   sub?: string;
   aud?: string;
@@ -165,7 +209,6 @@ export function issueAccessToken(input: {
   const token = randomToken("at_");
   const cred: Credential = {
     token,
-    type: "access_token",
     user_id: input.userId,
     scope: input.scope,
     issued_at: now,
@@ -177,59 +220,6 @@ export function issueAccessToken(input: {
     aud: input.aud,
     registration_id: input.registrationId,
   };
-  credentials.set(token, cred);
-  return cred;
-}
-
-export type IssueApiKeyInput =
-  | {
-      source: "anonymous";
-      scope: string[];
-      registrationId: string;
-    }
-  | {
-      source: "email_verification";
-      scope: string[];
-      userId: string;
-      registrationId: string;
-    }
-  | {
-      source: "identity_assertion";
-      scope: string[];
-      userId: string;
-      iss: string;
-      sub: string;
-      aud: string;
-    };
-
-export function issueApiKey(input: IssueApiKeyInput): Credential {
-  const token = randomToken("sk_test_", 20);
-  const base = {
-    token,
-    type: "api_key" as const,
-    scope: input.scope,
-    issued_at: new Date(),
-    revoked: false,
-    source: input.source,
-  };
-  let cred: Credential;
-  if (input.source === "anonymous") {
-    cred = { ...base, registration_id: input.registrationId };
-  } else if (input.source === "email_verification") {
-    cred = {
-      ...base,
-      user_id: input.userId,
-      registration_id: input.registrationId,
-    };
-  } else {
-    cred = {
-      ...base,
-      user_id: input.userId,
-      iss: input.iss,
-      sub: input.sub,
-      aud: input.aud,
-    };
-  }
   credentials.set(token, cred);
   return cred;
 }
@@ -257,6 +247,13 @@ export function revokeForDelegation(
   return count;
 }
 
+export function revokeCredential(token: string): boolean {
+  const c = credentials.get(token);
+  if (!c || c.revoked) return false;
+  c.revoked = true;
+  return true;
+}
+
 export function recordJti(jti: string, expSeconds: number): "ok" | "replay" {
   sweepJtis();
   if (seenJtis.has(jti)) return "replay";
@@ -275,93 +272,115 @@ export function sha256Hex(input: string): string {
   return createHash("sha256").update(input).digest("hex");
 }
 
-export function createAnonymousRegistration(input: {
-  requestedCredentialType: CredentialType;
-}): {
+/**
+ * Anonymous registrations start with an empty claim (only the agent's claim
+ * token is set — no email, no attempt). The agent receives the claim token
+ * in the registration response and can later initiate the user-facing
+ * ceremony by calling /agent/identity/claim with an email address.
+ */
+export function createAnonymousRegistration(): {
   registration: Registration;
-  credential: Credential;
   claimTokenPlaintext: string;
 } {
   const now = new Date();
   const registrationId = `reg_${randomBytes(16).toString("base64url")}`;
-
-  // No user is created up front — an unclaimed agent has a credential but
-  // no bound identity. The registration is linked to a user on claim.
-  const credential =
-    input.requestedCredentialType === "api_key"
-      ? issueApiKey({
-          scope: config.preClaimScopes,
-          source: "anonymous",
-          registrationId,
-        })
-      : (() => {
-          // Spec: anonymous only supports api_key. Caller should have
-          // rejected before reaching here.
-          throw new Error(
-            "anonymous registration only supports api_key credentials",
-          );
-        })();
-
   const claimTokenPlaintext = `clm_${randomBytes(19).toString("base64url")}`;
 
-  const registration: Registration = {
+  const registration = new Registration({
     id: registrationId,
     kind: "anonymous",
-    credential_token: credential.token,
-    requested_credential_type: input.requestedCredentialType,
-    claim_token_hash: sha256Hex(claimTokenPlaintext),
-    status: "unclaimed",
     created_at: now,
-    expires_at: new Date(now.getTime() + config.anonymousTtlSeconds * 1000),
-  };
-
+    claim: {
+      token_hash: sha256Hex(claimTokenPlaintext),
+      expires_at: new Date(now.getTime() + config.anonymousTtlSeconds * 1000),
+    },
+  });
   registrations.set(registration.id, registration);
-
-  return { registration, credential, claimTokenPlaintext };
+  return { registration, claimTokenPlaintext };
 }
 
-export function createEmailVerificationRegistration(input: {
-  email: string;
-  requestedCredentialType: CredentialType;
-}): {
+/**
+ * Email-verification registrations bundle the claim attempt: we send the
+ * email immediately and the agent polls /agent/identity/claim/complete with
+ * the OTP the user reads back. No separate /claim initiation needed.
+ */
+export function createEmailVerificationRegistration(input: { email: string }): {
   registration: Registration;
   claimTokenPlaintext: string;
   claimViewTokenPlaintext: string;
 } {
   const now = new Date();
   const registrationId = `reg_${randomBytes(16).toString("base64url")}`;
-
   const claimTokenPlaintext = `clm_${randomBytes(19).toString("base64url")}`;
   const claimViewTokenPlaintext = `cvt_${randomBytes(24).toString("base64url")}`;
 
-  // Email-verification registrations bundle the claim attempt: the email
-  // ceremony starts here, so the agent can poll /complete directly.
-  const registration: Registration = {
+  const registration = new Registration({
     id: registrationId,
     kind: "email_verification",
-    requested_credential_type: input.requestedCredentialType,
-    claim_token_hash: sha256Hex(claimTokenPlaintext),
-    claim_view_token_hash: sha256Hex(claimViewTokenPlaintext),
-    claim_view_expires_at: new Date(
-      now.getTime() + config.claimViewTokenTtlSeconds * 1000,
-    ),
-    claim_email: input.email,
-    claim_attempt_id: `cla_${randomBytes(16).toString("base64url")}`,
-    status: "pending_claim",
     created_at: now,
-    expires_at: new Date(now.getTime() + config.anonymousTtlSeconds * 1000),
-  };
-
+    claim: {
+      token_hash: sha256Hex(claimTokenPlaintext),
+      email: input.email,
+      expires_at: new Date(now.getTime() + config.anonymousTtlSeconds * 1000),
+      attempt: {
+        id: `cla_${randomBytes(16).toString("base64url")}`,
+        view_token_hash: sha256Hex(claimViewTokenPlaintext),
+        view_expires_at: new Date(
+          now.getTime() + config.claimViewTokenTtlSeconds * 1000,
+        ),
+      },
+    },
+  });
   registrations.set(registration.id, registration);
-
   return { registration, claimTokenPlaintext, claimViewTokenPlaintext };
+}
+
+function idJagRegistrationKey(iss: string, sub: string, aud: string): string {
+  return `reg_${sha256Hex(`${iss}|${sub}|${aud}`).slice(0, 22)}`;
+}
+
+/**
+ * ID-JAG clean match: the matcher found an existing delegation or JIT-
+ * provisioned a fresh user. No claim ceremony required. Returns an existing
+ * registration for the same (iss, sub, aud) if one is already on file —
+ * keeps the registration_id stable across repeated ID-JAG presentations
+ * from the same provider/user pair.
+ */
+export function findOrCreateIdJagRegistration(input: {
+  iss: string;
+  sub: string;
+  aud: string;
+  userId: string;
+}): Registration {
+  const id = idJagRegistrationKey(input.iss, input.sub, input.aud);
+  const existing = registrations.get(id);
+  if (existing) {
+    /* Keep the user binding current in case of JIT-provision races. */
+    existing.user_id = input.userId;
+    return existing;
+  }
+  const now = new Date();
+  const registration = new Registration({
+    id,
+    kind: "id_jag",
+    user_id: input.userId,
+    created_at: now,
+    claimed_at: now,
+    id_jag: { iss: input.iss, sub: input.sub, aud: input.aud },
+  });
+  registrations.set(registration.id, registration);
+  return registration;
+}
+
+export function findRegistrationById(id: string): Registration | undefined {
+  return registrations.get(id);
 }
 
 export function findRegistrationByClaimHash(
   hash: string,
 ): Registration | undefined {
   for (const r of registrations.values()) {
-    if (r.claim_token_hash === hash) return r;
+    if (r.claim?.token_hash === hash) return r;
   }
   return undefined;
 }
@@ -370,7 +389,7 @@ export function findRegistrationByClaimViewHash(
   hash: string,
 ): Registration | undefined {
   for (const r of registrations.values()) {
-    if (r.claim_view_token_hash === hash) return r;
+    if (r.claim?.attempt?.view_token_hash === hash) return r;
   }
   return undefined;
 }
@@ -381,34 +400,45 @@ export function recordAnonymousClaimAttempt(
 ): string {
   const now = new Date();
   const plaintext = `cvt_${randomBytes(24).toString("base64url")}`;
-  registration.status = "pending_claim";
-  registration.claim_email = email;
-  registration.claim_attempt_id = `cla_${randomBytes(16).toString("base64url")}`;
-  registration.claim_view_token_hash = sha256Hex(plaintext);
-  registration.claim_view_expires_at = new Date(
-    now.getTime() + config.claimViewTokenTtlSeconds * 1000,
-  );
+  if (!registration.claim) {
+    throw new Error("registration has no claim handle");
+  }
+  registration.claim.email = email;
+  registration.claim.attempt = {
+    id: `cla_${randomBytes(16).toString("base64url")}`,
+    view_token_hash: sha256Hex(plaintext),
+    view_expires_at: new Date(
+      now.getTime() + config.claimViewTokenTtlSeconds * 1000,
+    ),
+  };
   return plaintext;
 }
 
-// Mints a fresh OTP and overwrites any prior one. Refreshing the claim-view
-// page reissues a code; the previous code is no longer accepted.
+/**
+ * Mints a fresh OTP and overwrites any prior one. Refreshing the claim-view
+ * page reissues a code; the previous code is no longer accepted.
+ */
 export function generateOtpForRegistration(registration: Registration): {
   otp: string;
   expiresAt: Date;
 } {
+  const attempt = registration.claim?.attempt;
+  if (!attempt) {
+    throw new Error("registration has no active claim attempt");
+  }
   const now = new Date();
   const otp = String(randomInt(0, 1_000_000)).padStart(6, "0");
-  registration.otp_hash = sha256Hex(otp);
-  registration.otp_generated_at = now;
-  registration.otp_expires_at = new Date(
-    now.getTime() + config.otpTtlSeconds * 1000,
-  );
-  return { otp, expiresAt: registration.otp_expires_at };
+  const expiresAt = new Date(now.getTime() + config.otpTtlSeconds * 1000);
+  attempt.otp = {
+    hash: sha256Hex(otp),
+    generated_at: now,
+    expires_at: expiresAt,
+  };
+  return { otp, expiresAt };
 }
 
 export type CompleteClaimResult =
-  | { ok: true; registration: Registration; credential?: Credential }
+  | { ok: true; registration: Registration; user: User }
   | {
       ok: false;
       error:
@@ -426,82 +456,43 @@ export function completeClaim(
   if (registration.status === "claimed") {
     return { ok: false, error: "previously_claimed" };
   }
-  if (registration.expires_at.getTime() < Date.now()) {
+  if (registration.status === "expired") {
     return { ok: false, error: "claim_expired" };
   }
-  if (!registration.otp_hash || !registration.otp_expires_at) {
+  const attempt = registration.claim?.attempt;
+  if (!attempt?.otp) {
     return { ok: false, error: "otp_not_generated" };
   }
-  if (registration.otp_expires_at.getTime() < Date.now()) {
+  if (attempt.otp.expires_at.getTime() < Date.now()) {
     return { ok: false, error: "otp_expired" };
   }
-  if (sha256Hex(otp) !== registration.otp_hash) {
+  if (sha256Hex(otp) !== attempt.otp.hash) {
     return { ok: false, error: "otp_invalid" };
   }
 
+  const email = registration.claim!.email!;
+  let user = findUserByEmail(email);
+  if (!user) {
+    user = createUser({ email, email_verified: true });
+  }
+  registration.user_id = user.id;
+  registration.claimed_at = new Date();
+  /* Clear claim handle: same registration can't be re-claimed. */
+  registration.claim = undefined;
+
   if (registration.kind === "anonymous") {
-    return completeAnonymousClaim(registration);
+    /*
+     * In-place scope upgrade: any access_tokens issued from this
+     * registration's pre-claim assertion remain valid; their scope set is
+     * widened to post_claim. The agent keeps using the same token.
+     */
+    for (const cred of credentials.values()) {
+      if (cred.registration_id === registration.id && !cred.revoked) {
+        cred.user_id = user.id;
+        cred.scope = config.postClaimScopes;
+      }
+    }
   }
-  return completeEmailVerificationClaim(registration);
-}
 
-function completeAnonymousClaim(
-  registration: Registration,
-): CompleteClaimResult {
-  const email = registration.claim_email!;
-  let user = findUserByEmail(email);
-  if (!user) {
-    user = createUser({ email, email_verified: true });
-  }
-  registration.status = "claimed";
-  registration.user_id = user.id;
-  registration.claimed_at = new Date();
-  registration.otp_hash = undefined;
-  registration.otp_expires_at = undefined;
-  registration.claim_view_token_hash = undefined;
-  registration.claim_view_expires_at = undefined;
-  // In-place scope upgrade on the existing API key.
-  const cred = registration.credential_token
-    ? credentials.get(registration.credential_token)
-    : undefined;
-  if (cred) {
-    cred.user_id = user.id;
-    cred.scope = config.postClaimScopes;
-  }
-  return { ok: true, registration, credential: cred };
-}
-
-function completeEmailVerificationClaim(
-  registration: Registration,
-): CompleteClaimResult {
-  const email = registration.claim_email!;
-  let user = findUserByEmail(email);
-  if (!user) {
-    user = createUser({ email, email_verified: true });
-  }
-  registration.status = "claimed";
-  registration.user_id = user.id;
-  registration.claimed_at = new Date();
-  registration.otp_hash = undefined;
-  registration.otp_expires_at = undefined;
-  registration.claim_view_token_hash = undefined;
-  registration.claim_view_expires_at = undefined;
-
-  const scope = config.postClaimScopes;
-  const credential =
-    registration.requested_credential_type === "api_key"
-      ? issueApiKey({
-          source: "email_verification",
-          scope,
-          userId: user.id,
-          registrationId: registration.id,
-        })
-      : issueAccessToken({
-          source: "email_verification",
-          scope,
-          userId: user.id,
-          registrationId: registration.id,
-        });
-  registration.credential_token = credential.token;
-  return { ok: true, registration, credential };
+  return { ok: true, registration, user };
 }

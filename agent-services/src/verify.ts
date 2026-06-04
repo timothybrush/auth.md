@@ -1,7 +1,9 @@
 import { type JWTPayload, decodeProtectedHeader, jwtVerify } from "jose";
 import { config } from "./config.js";
-import { recordJti } from "./store.js";
+import { getPublicKey, signServiceJwt } from "./keys.js";
+import { type Registration, recordJti } from "./store.js";
 import { getJwks, isTrustedIssuer } from "./trust.js";
+import { randomUUID } from "node:crypto";
 
 export type VerifyError = {
   code:
@@ -191,6 +193,101 @@ export async function verifyLogoutJwt(
     return { ok: true, claims };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
+    return { ok: false, error: { code: "invalid_signature", message } };
+  }
+}
+
+export type ServiceAssertionClaims = JWTPayload & {
+  iss: string;
+  sub: string;
+  aud: string;
+  jti: string;
+  email?: string;
+  email_verified?: boolean;
+  amr?: string[];
+};
+
+/**
+ * Mint a service-signed identity_assertion bound to a registration. The
+ * agent presents this at /oauth2/token (RFC 7523 JWT-bearer) to obtain an
+ * access_token. `sub` is the registration id so the token endpoint can
+ * resolve back to the registration's state on exchange.
+ */
+export async function signServiceIdJag(input: {
+  registration: Registration;
+  email?: string;
+  emailVerified?: boolean;
+  amr?: string[];
+}): Promise<{ jwt: string; expiresAt: Date }> {
+  const payload: Record<string, unknown> = {
+    iss: config.baseUrl,
+    sub: input.registration.id,
+    aud: config.baseUrl,
+    jti: `jti_${randomUUID()}`,
+  };
+  if (input.email) payload.email = input.email;
+  if (input.emailVerified !== undefined) {
+    payload.email_verified = input.emailVerified;
+  }
+  if (input.amr) payload.amr = input.amr;
+  return signServiceJwt(
+    payload,
+    "oauth-id-jag+jwt",
+    config.serviceAssertionTtlSeconds,
+  );
+}
+
+export async function verifyServiceIdJag(
+  jwt: string,
+): Promise<
+  | { ok: true; claims: ServiceAssertionClaims }
+  | { ok: false; error: VerifyError }
+> {
+  let header;
+  try {
+    header = decodeProtectedHeader(jwt);
+  } catch {
+    return {
+      ok: false,
+      error: { code: "invalid_request", message: "Malformed JWT header." },
+    };
+  }
+  if (header.typ && header.typ !== "oauth-id-jag+jwt") {
+    return {
+      ok: false,
+      error: {
+        code: "invalid_request",
+        message: `Unexpected typ ${String(header.typ)}; wanted oauth-id-jag+jwt.`,
+      },
+    };
+  }
+  try {
+    const publicKey = await getPublicKey();
+    const res = await jwtVerify(jwt, publicKey, {
+      issuer: config.baseUrl,
+      audience: config.baseUrl,
+      typ: "oauth-id-jag+jwt",
+      clockTolerance: config.clockSkewSeconds,
+    });
+    const claims = res.payload as ServiceAssertionClaims;
+    if (!claims.jti || !claims.sub) {
+      return {
+        ok: false,
+        error: {
+          code: "invalid_request",
+          message: "Missing required claim (jti or sub).",
+        },
+      };
+    }
+    return { ok: true, claims };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    if (/expired|exp/i.test(message)) {
+      return { ok: false, error: { code: "expired", message } };
+    }
+    if (/audience/i.test(message)) {
+      return { ok: false, error: { code: "invalid_audience", message } };
+    }
     return { ok: false, error: { code: "invalid_signature", message } };
   }
 }

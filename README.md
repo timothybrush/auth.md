@@ -16,7 +16,7 @@ This repo includes sample implementations for both the agent provider and agent 
 
 ## Where to go next
 
-- **You're an agent or want an auth.md template** → [AUTH.md](AUTH.md) — procedural recipe (discover → register → claim → use → handle revoke).
+- **You're an agent or want an auth.md template** → [AUTH.md](AUTH.md) — procedural recipe (discover → register → claim → exchange → use → handle revoke).
 - **You're implementing a service** → [agent-services/README.md](agent-services/README.md) — full implementation guide, sequence diagrams, error tables.
 - **You're implementing an IdP** → [agent-providers/README.md](agent-providers/README.md) — minting ID-JAGs, publishing JWKS, sending revocation events.
 
@@ -31,7 +31,7 @@ Service at <http://localhost:8000>, provider at <http://localhost:4000>. The ser
 
 ## System Flows
 
-Three registration flows share the `/agent/auth` endpoint. Pick the one that matches what the agent has on hand.
+Registration and credential issuance are split across two endpoints. `POST /agent/identity` accepts the agent's chosen identity assertion (ID-JAG, verified email, or anonymous) and returns a service-signed `identity_assertion`. The agent then exchanges that assertion at `POST /oauth2/token` (RFC 7523 JWT-bearer grant) for an access_token.
 
 ### Discovery
 
@@ -43,21 +43,23 @@ Hosted at `/.well-known/oauth-authorization-server`:
   "authorization_servers": ["https://auth.service.example.com/"],
   "scopes_supported": ["api.read", "api.write"],
   "bearer_methods_supported": ["header"],
+
+  "issuer": "https://auth.service.example.com",
+  "token_endpoint": "https://auth.service.example.com/oauth2/token",
+  "revocation_endpoint": "https://auth.service.example.com/oauth2/revoke",
+  "grant_types_supported": ["urn:ietf:params:oauth:grant-type:jwt-bearer"],
+
   "agent_auth": {
     "skill": "https://service.example.com/auth.md",
-    "register_uri": "https://auth.service.example.com/agent/auth",
-    "claim_uri": "https://auth.service.example.com/agent/auth/claim",
+    "identity_endpoint": "https://auth.service.example.com/agent/identity",
+    "claim_endpoint": "https://auth.service.example.com/agent/identity/claim",
     "revocation_uri": "https://auth.service.example.com/agent/auth/revoke",
     "identity_types_supported": ["anonymous", "identity_assertion"],
-    "anonymous": {
-      "credential_types_supported": ["api_key"]
-    },
     "identity_assertion": {
       "assertion_types_supported": [
         "urn:ietf:params:oauth:token-type:id-jag",
         "verified_email"
-      ],
-      "credential_types_supported": ["access_token", "api_key"]
+      ]
     },
     "events_supported": [
       "https://schemas.workos.com/events/agent/auth/identity/assertion/revoked"
@@ -65,6 +67,8 @@ Hosted at `/.well-known/oauth-authorization-server`:
   }
 }
 ```
+
+The top-level `issuer` / `token_endpoint` / `revocation_endpoint` / `grant_types_supported` are standard [RFC 8414](https://datatracker.ietf.org/doc/html/rfc8414) / [RFC 7009](https://datatracker.ietf.org/doc/html/rfc7009) / [RFC 7523](https://datatracker.ietf.org/doc/html/rfc7523) fields. The `agent_auth` block is the profile extension carrying the registration and claim surface.
 
 ### Identity Assertion (ID-JAG)
 
@@ -89,11 +93,13 @@ sequenceDiagram
     Agent->>Provider: Request audience-specific ID-JAG
     Provider-->>Agent: 200 OK (ID-JAG)
 
-    Agent->>Service: POST /agent/auth<br/>{ type: identity_assertion, assertion: ID-JAG }
+    Agent->>Service: POST /agent/identity<br/>{ type: identity_assertion, assertion: ID-JAG }
     Service->>Provider: GET /.well-known/jwks.json
     Provider-->>Service: 200 OK (JSON Web Key Set)
-    Service->>Service: Verify signature + claims, match user
-    Service-->>Agent: 200 OK (credentials)
+    Service-->>Agent: 200 OK (identity_assertion)
+
+    Agent->>Service: POST /oauth2/token<br/>grant_type=jwt-bearer&assertion=...
+    Service-->>Agent: 200 OK (access_token)
 ```
 
 ### Verified-Email Identity Assertion
@@ -104,14 +110,16 @@ sequenceDiagram
     participant Agent
     participant Service
 
-    Agent->>Service: POST /agent/auth<br/>{ type: identity_assertion, assertion_type: verified_email, assertion: email }
+    Agent->>Service: POST /agent/identity<br/>{ type: identity_assertion, assertion_type: verified_email, assertion: email }
     Service->>User: Send claim-view email (one-time URL)
-    Service-->>Agent: 200 OK (claim_token, no credential)
-    User->>Service: GET /agent/auth/claim/view?token=...
+    Service-->>Agent: 200 OK (claim_token, no assertion yet)
+    User->>Service: GET /agent/identity/claim/view?token=...
     Service-->>User: 6-digit OTP page
     User-->>Agent: Reads OTP back
-    Agent->>Service: POST /agent/auth/claim/complete<br/>{ claim_token, otp }
-    Service-->>Agent: 200 OK (credential)
+    Agent->>Service: POST /agent/identity/claim/complete<br/>{ claim_token, otp }
+    Service-->>Agent: 200 OK (identity_assertion)
+    Agent->>Service: POST /oauth2/token<br/>grant_type=jwt-bearer&assertion=...
+    Service-->>Agent: 200 OK (access_token)
 ```
 
 ### Anonymous Registration with OTP Claim
@@ -122,19 +130,21 @@ sequenceDiagram
     participant Agent
     participant Service
 
-    Agent->>Service: POST /agent/auth<br/>{ type: anonymous, requested_credential_type: api_key }
-    Service->>Service: Create agent principal, scoped API key, claim record
-    Service-->>Agent: 200 OK (api_key, claim_token)
+    Agent->>Service: POST /agent/identity<br/>{ type: anonymous }
+    Service-->>Agent: 200 OK (identity_assertion, claim_token)
+    Agent->>Service: POST /oauth2/token<br/>grant_type=jwt-bearer&assertion=...
+    Service-->>Agent: 200 OK (access_token with pre-claim scope)
 
     Note over Agent: Agent operates with pre-claim scopes
 
     User-->>Agent: Wants to take ownership
-    Agent->>Service: POST /agent/auth/claim<br/>{ claim_token, email }
+    Agent->>Service: POST /agent/identity/claim<br/>{ claim_token, email }
     Service->>User: Send claim-view email (one-time URL)
-    User->>Service: GET /agent/auth/claim/view?token=...
+    User->>Service: GET /agent/identity/claim/view?token=...
     Service-->>User: 6-digit OTP page
     User-->>Agent: Reads OTP back
-    Agent->>Service: POST /agent/auth/claim/complete<br/>{ claim_token, otp }
-    Service->>Service: Swap API key perms (pre-claim → post-claim)
+    Agent->>Service: POST /agent/identity/claim/complete<br/>{ claim_token, otp }
     Service-->>Agent: 200 OK { status: claimed }
+    Agent->>Service: POST /oauth2/token (re-exchange same assertion)
+    Service-->>Agent: 200 OK (access_token with post-claim scope)
 ```

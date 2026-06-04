@@ -29,10 +29,13 @@ sequenceDiagram
     Agent->>Provider: Request audience-specific ID-JAG
     Provider-->>Agent: 200 OK (ID-JAG)
 
-    Agent->>Service: POST /agent/auth<br/>{ type: identity_assertion, assertion: ID-JAG, credential_type }
+    Agent->>Service: POST /agent/identity<br/>{ type: identity_assertion, assertion: ID-JAG }
     Service->>Provider: GET /.well-known/jwks.json
     Provider-->>Service: 200 OK (JSON Web Key Set)
-    Service-->>Agent: 200 OK (credentials)
+    Service-->>Agent: 200 OK (identity_assertion)
+
+    Agent->>Service: POST /oauth2/token<br/>grant_type=urn:ietf:params:oauth:grant-type:jwt-bearer&assertion=...
+    Service-->>Agent: 200 OK (access_token)
 ```
 
 ## Minimum Agent Provider Implementation
@@ -68,21 +71,23 @@ Discovery is two-hop:
      "authorization_servers": ["https://auth.service.example.com/"],
      "scopes_supported": ["api.read", "api.write"],
      "bearer_methods_supported": ["header"],
+
+     "issuer": "https://auth.service.example.com",
+     "token_endpoint": "https://auth.service.example.com/oauth2/token",
+     "revocation_endpoint": "https://auth.service.example.com/oauth2/revoke",
+     "grant_types_supported": ["urn:ietf:params:oauth:grant-type:jwt-bearer"],
+
      "agent_auth": {
        "skill": "https://service.example.com/auth.md",
-       "register_uri": "https://auth.service.example.com/agent/auth",
-       "claim_uri": "https://auth.service.example.com/agent/auth/claim",
+       "identity_endpoint": "https://auth.service.example.com/agent/identity",
+       "claim_endpoint": "https://auth.service.example.com/agent/identity/claim",
        "revocation_uri": "https://auth.service.example.com/agent/auth/revoke",
        "identity_types_supported": ["anonymous", "identity_assertion"],
-       "anonymous": {
-         "credential_types_supported": ["api_key"]
-       },
        "identity_assertion": {
          "assertion_types_supported": [
            "urn:ietf:params:oauth:token-type:id-jag",
            "verified_email"
-         ],
-         "credential_types_supported": ["access_token", "api_key"]
+         ]
        },
        "events_supported": [
          "https://schemas.workos.com/events/agent/auth/identity/assertion/revoked"
@@ -90,6 +95,8 @@ Discovery is two-hop:
      }
    }
    ```
+
+   The top-level `token_endpoint`, `revocation_endpoint`, and `grant_types_supported` are standard [RFC 8414](https://datatracker.ietf.org/doc/html/rfc8414) / [RFC 7009](https://datatracker.ietf.org/doc/html/rfc7009) / [RFC 7523](https://datatracker.ietf.org/doc/html/rfc7523) fields. The `agent_auth` block carries the profile-specific bootstrap, claim, and revocation endpoints.
 
 ### Minting the Identity Assertion
 
@@ -114,7 +121,6 @@ Discovery is two-hop:
 
   // optional
   "amr": ["mfa"],
-  "auth_time": <original auth epoch seconds>,
   "name": "Jane Smith",
 	"phone_number": "+15553805188",
 	"phone_number_verified": false,
@@ -146,70 +152,84 @@ In order for consuming services to verify the ID-JAG tokens, agent providers mus
 }
 ```
 
-### Acquiring Credentials
+### Acquiring an access token
 
-Once the ID-JAG is minted, the agent can exchange it for service credentials:
+Exchanging an ID-JAG for an access_token is a two-step dance: the consuming service first issues its own service-signed identity assertion bound to the registration, then the agent exchanges that assertion at the OAuth token endpoint.
 
-```json
-POST /agent/auth HTTP/1.1
+**Step 1 — register the identity.** Submit the provider ID-JAG to the service's `identity_endpoint`:
+
+```http
+POST /agent/identity HTTP/1.1
 Host: auth.service.example.com
 Content-Type: application/json
 
-Payload:
 {
   "type": "identity_assertion",
   "assertion_type": "urn:ietf:params:oauth:token-type:id-jag",
-  "assertion": "eyJhbGc...",
-  "requested_credential_type": "<access_token | api_key>"
+  "assertion": "eyJhbGc..."
 }
-
-200 Response (access_token):
-{
-  "registration_id": "reg_...",
-  "registration_type": "agent-provider",
-  "credential_type": "access_token",
-  "credential": "<token>",
-  "credential_expires": "2026-05-04T13:00:00.000Z",
-  "scopes": ["api.read", "api.write"]
-}
-
-200 Response (api_key):
-{
-  "registration_id": "reg_...",
-  "registration_type": "agent-provider",
-  "credential_type": "api_key",
-  "credential": "sk_live_...",
-  "credential_expires": null,
-  "scopes": ["api.read", "api.write"]
-}
-
-400 Response:
-{ "error": "invalid_audience", "message": "..." }
 ```
 
-The spec supports both `access_token` and `api_key` credentials, with implementation up to the service.
+200 response — the service verified the ID-JAG, found or JIT-provisioned the user, and minted a service-signed `identity_assertion`:
 
-The ID-JAG spec specifies that access tokens returned from ID-JAG verification should not include a refresh token. If the agent wants to extend the life of its access token for a specific audience, it should follow the same flow to get a new credential.
+```json
+{
+  "registration_id": "reg_...",
+  "registration_type": "agent-provider",
+  "identity_assertion": "<service-signed JWT>",
+  "assertion_expires": "2026-05-04T13:00:00.000Z",
+  "scopes": ["api.read", "api.write"]
+}
+```
+
+**Step 2 — exchange the assertion at `/oauth2/token`.** Standard [RFC 7523](https://datatracker.ietf.org/doc/html/rfc7523) JWT-bearer grant:
+
+```http
+POST /oauth2/token HTTP/1.1
+Host: auth.service.example.com
+Content-Type: application/x-www-form-urlencoded
+
+grant_type=urn:ietf:params:oauth:grant-type:jwt-bearer
+&assertion=<service-signed identity_assertion>
+&resource=https://api.service.example.com/
+```
+
+200 response is a standard OAuth token envelope:
+
+```json
+{
+  "access_token": "<token>",
+  "token_type": "Bearer",
+  "expires_in": 3600,
+  "scope": "api.read api.write"
+}
+```
+
+If the access_token expires, the agent re-calls `/oauth2/token` with the same identity assertion. If the assertion itself is expired or revoked, `/oauth2/token` returns `invalid_grant` and the agent re-calls `/agent/identity` to mint a fresh one. The ID-JAG flow does not issue OAuth refresh_tokens — the two-step pattern replaces refresh.
 
 #### Errors
 
-| Error code                         | Meaning                                                                                              |
-| ---------------------------------- | ---------------------------------------------------------------------------------------------------- |
-| `invalid_issuer`                   | Token `iss` isn't in the service's trusted providers list.                                           |
-| `invalid_signature`                | JWKS lookup failed or the signature didn't verify against any known key.                             |
-| `expired`                          | `exp` is in the past.                                                                                |
-| `replay_detected`                  | `jti` has already been seen within the replay window.                                                |
-| `invalid_audience`                 | `aud` doesn't match the service's auth server.                                                       |
-| `invalid_client_id`                | `client_id` doesn't resolve to a known provider identity.                                            |
-| `missing_verified_email`           | Neither `email_verified` nor `phone_number_verified` is `true`.                                      |
-| `unsupported_credential_type`      | Requested credential type isn't offered by the service.                                              |
-| `insufficient_user_authentication` | Auth context didn't meet policy ([RFC 9470](https://datatracker.ietf.org/doc/html/rfc9470) pattern). |
+Errors at `/agent/identity` describe profile-specific states; errors at `/oauth2/token` follow OAuth-standard vocabulary.
+
+| Endpoint          | Error code               | Meaning                                                                                                              |
+| ----------------- | ------------------------ | -------------------------------------------------------------------------------------------------------------------- |
+| `/agent/identity` | `invalid_issuer`         | Token `iss` isn't in the service's trusted providers list.                                                           |
+| `/agent/identity` | `invalid_signature`      | JWKS lookup failed or the signature didn't verify against any known key.                                             |
+| `/agent/identity` | `expired`                | `exp` is in the past.                                                                                                |
+| `/agent/identity` | `replay_detected`        | `jti` has already been seen within the replay window.                                                                |
+| `/agent/identity` | `invalid_audience`       | `aud` doesn't match the service's auth server.                                                                       |
+| `/agent/identity` | `invalid_client_id`      | `client_id` doesn't resolve to a known provider identity.                                                            |
+| `/agent/identity` | `missing_verified_email` | Neither `email_verified` nor `phone_number_verified` is `true`.                                                      |
+| `/agent/identity` | `invalid_request`        | Body shape, missing claims, or unverified identity (neither `email_verified` nor `phone_number_verified` is `true`). |
+| `/oauth2/token`   | `invalid_grant`          | Assertion failed verification, expired, replayed, audience-mismatched, or has been revoked.                          |
+| `/oauth2/token`   | `invalid_client`         | `client_id` doesn't resolve to a known provider identity.                                                            |
+| `/oauth2/token`   | `unsupported_grant_type` | `grant_type` is not `urn:ietf:params:oauth:grant-type:jwt-bearer`.                                                   |
 
 ## Downstream Verification
 
 Services will maintain a list of trusted agent providers. The service will attempt to match to an existing customer, looking for matches on `(iss, sub)` and then email/phone for JIT provisioning, and will determine whether to create a new account or permit using the identity assertion to return credentials for an existing account.
 
-Services will reject ID-JAGs with neither a verified email nor a verified phone number. If the service is satisfied by the validity of the identity assertion, it will return credentials of the requested type.
+Services will reject ID-JAGs with neither a verified email nor a verified phone number. If the service is satisfied by the validity of the identity assertion, it will return a service-signed identity assertion the agent can then exchange at `/oauth2/token` for an access_token.
 
 ## Tracking and Revocation
 

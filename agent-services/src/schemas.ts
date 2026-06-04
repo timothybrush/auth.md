@@ -7,19 +7,16 @@ const idJagAssertionBody = z.object({
   type: z.literal("identity_assertion"),
   assertion_type: z.literal(ID_JAG),
   assertion: z.string().min(1),
-  requested_credential_type: z.enum(["access_token", "api_key"]),
 });
 
 const emailAssertionBody = z.object({
   type: z.literal("identity_assertion"),
   assertion_type: z.literal(EMAIL_ASSERTION),
   assertion: z.email(),
-  requested_credential_type: z.enum(["access_token", "api_key"]),
 });
 
 const anonymousBody = z.object({
   type: z.literal("anonymous"),
-  requested_credential_type: z.literal("api_key"),
 });
 
 export const agentAuthBody = z.union([
@@ -40,6 +37,23 @@ export const claimCompleteBody = z.object({
 
 export const generateOtpBody = z.object({
   claim_attempt_token: z.string().min(1),
+});
+
+/**
+ * RFC 7523 JWT-bearer grant. The agent presents a service-signed
+ * identity_assertion as the `assertion` parameter; the service exchanges it
+ * for an access_token scoped per the registration's state.
+ */
+export const tokenEndpointBody = z.object({
+  grant_type: z.literal("urn:ietf:params:oauth:grant-type:jwt-bearer"),
+  assertion: z.string().min(1),
+  resource: z.string().url().optional(),
+});
+
+/** RFC 7009 token revocation. */
+export const revocationEndpointBody = z.object({
+  token: z.string().min(1),
+  token_type_hint: z.literal("access_token").optional(),
 });
 
 export const ASSERTION_TYPES = { ID_JAG, EMAIL_ASSERTION } as const;
