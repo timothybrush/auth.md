@@ -12,7 +12,7 @@ import {
   createEmailVerificationRegistration,
   findOrCreateIdJagRegistration,
   findRegistrationByClaimHash,
-  recordAnonymousClaimAttempt,
+  recordClaimAttempt,
   revokeForDelegation,
   sha256Hex,
 } from "../store.js";
@@ -147,8 +147,11 @@ async function handleEmailAssertion(
 }
 
 /*
- * Anonymous-only entry point. Email-verification registrations skip this —
- * their ceremony is bundled into /agent/identity itself.
+ * Initiates or re-mints a claim ceremony. Two registration kinds reach here:
+ *   - anonymous: first initiation (binds the email) or refresh (after the
+ *     user_code window closed before the user could complete).
+ *   - email_verification: refresh only (the initial ceremony was minted at
+ *     /agent/identity); the supplied email must match the registration.
  */
 agentAuthRouter.post(config.claimEndpointPath, async (req, res) => {
   const parsed = parseBody(claimBody, req.body);
@@ -166,11 +169,10 @@ agentAuthRouter.post(config.claimEndpointPath, async (req, res) => {
     });
     return;
   }
-  if (registration.kind !== "anonymous") {
+  if (registration.kind === "id_jag") {
     res.status(409).json({
       error: "claimed_or_in_flight",
-      message:
-        "Email-verification registrations bundle the ceremony into /agent/identity.",
+      message: "ID-JAG registrations do not require a claim ceremony.",
     });
     return;
   }
@@ -187,14 +189,25 @@ agentAuthRouter.post(config.claimEndpointPath, async (req, res) => {
     });
     return;
   }
+  if (
+    registration.kind === "email_verification" &&
+    registration.claim?.email !== parsed.value.email
+  ) {
+    res.status(400).json({
+      error: "email_mismatch",
+      message:
+        "The supplied email does not match the registration's bound email.",
+    });
+    return;
+  }
 
   /*
-   * Same-email retry while a prior attempt's view window is still open:
-   * re-issue a fresh ceremony (new claim_attempt_token + new user_code)
-   * rather than echoing the old one. The agent surfaces the new code to the
-   * user; the prior URL stops working.
+   * Mint a fresh ceremony (new claim_attempt_token + new user_code). For
+   * anonymous this binds the supplied email; for email-verification it refreshes
+   * an expired user_code without changing the bound email. Any prior URL
+   * stops working.
    */
-  const fresh = recordAnonymousClaimAttempt(registration, parsed.value.email);
+  const fresh = recordClaimAttempt(registration, parsed.value.email);
   const attempt = registration.claim!.attempt!;
 
   console.log(

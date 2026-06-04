@@ -18,12 +18,15 @@ Inverts the claim ceremony and consolidates polling onto the standard `/oauth2/t
 - `verification_uri` carries a `claim_attempt_token` that binds the URL to a specific registration without leaking the user-typed `user_code`.
 - The anonymous `email` parameter on `POST /agent/identity/claim` binds the registration to a specific signed-in account — only that user can complete the ceremony at `/claim`, preventing third-party interception of the `user_code`. The wrong-account check fires whenever `claim_email` is set, covering both anonymous and email-verification kinds.
 - Anonymous claim completion **revokes** any pre-claim access_tokens the agent was holding. The canonical credential post-claim is the one returned by the claim grant.
+- `POST /agent/identity/claim` accepts email-verification registrations, for initiating a new claim attempt. The supplied email must match the registration's email. Allows the agent to re-mint an expired `user_code` without re-registering. Previously this endpoint was anonymous-only and email-verification registrations had no re-initiation path.
+- `/oauth2/token` (claim grant) returns `expired_token` when the `user_code` window has closed (independent of the outer claim window). Tells the agent to re-call `/agent/identity/claim` for a fresh code instead of polling `authorization_pending` indefinitely.
+- Service-owned session cookie at `/login` now sets `secure: true` outside of development.
 
 ### Removed
 
 - `/agent/identity/claim/attempt/challenge` — `user_code` is minted at ceremony start now; no separate mint step.
 - `/agent/identity/claim/view` — polling moved to `/oauth2/token` with the claim grant.
-- The mail surface (`mail.ts`, `routes/mail.ts`, the `.mail/` outbox directory) — the agent already has the verification URL and `user_code`, so an out-of-band email channel adds nothing and is the part most vulnerable to phishing-by-agent.
+- The mail surface (`mail.ts`, `routes/mail.ts`, the `.mail/` outbox directory) — the agent already has the verification URL and `user_code`, so an out-of-band email channel adds nothing.
 
 ## v0.3.0 (2026-06-03)
 

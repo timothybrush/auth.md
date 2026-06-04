@@ -53,6 +53,7 @@ loginRouter.post("/login", (req, res) => {
   const session = createSession(user.id);
   res.cookie(config.sessionCookieName, session.token, {
     httpOnly: true,
+    secure: process.env.NODE_ENV !== "development",
     sameSite: "lax",
     path: "/",
     maxAge: config.sessionTtlSeconds * 1000,

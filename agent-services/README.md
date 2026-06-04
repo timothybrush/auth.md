@@ -586,7 +586,7 @@ Record the following state transitions for observability and incident response. 
 | `assertion.issued`     | A service-signed identity_assertion is minted               | `registration_id`                       |
 | `token.issued`         | `/oauth2/token` returns an access_token                     | `registration_id`, `scope`              |
 | `token.revoked`        | `/oauth2/revoke` invalidates a credential                   | `registration_id`                       |
-| `claim.requested`      | `/agent/identity/claim` called (or implicit on email-verif) | `registration_id`, `email`              |
+| `claim.requested`      | `/agent/identity/claim` called (or implicit on email-verification) | `registration_id`, `email`              |
 | `user_code.minted`     | user_code minted at ceremony start                          | `registration_id`                       |
 | `claim.confirmed`      | `/agent/identity/claim/complete` succeeds                   | `registration_id`, `claimed_by_user_id` |
 | `registration.expired` | Unclaimed registration past its TTL                         | `registration_id`                       |

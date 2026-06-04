@@ -121,7 +121,14 @@ sequenceDiagram
 
     loop until claimed
       Agent->>Service: POST /oauth2/token<br/>grant_type=claim&claim_token=...
-      Service-->>Agent: 200 OK (access_token + identity_assertion) | authorization_pending
+      alt user_code window open
+        Service-->>Agent: 200 OK (access_token + identity_assertion) | authorization_pending
+      else user_code expired (outer claim window still open)
+        Service-->>Agent: 400 expired_token
+        Agent->>Service: POST /agent/identity/claim<br/>{ claim_token, email }
+        Service-->>Agent: 200 OK (fresh claim_attempt: new user_code + verification_uri)
+        Agent-->>User: Surface new user_code + verification_uri
+      end
     end
 ```
 
@@ -149,6 +156,13 @@ sequenceDiagram
 
     loop until claimed
       Agent->>Service: POST /oauth2/token<br/>grant_type=claim&claim_token=...
-      Service-->>Agent: 200 OK (post-claim access_token + v2 identity_assertion) | authorization_pending
+      alt user_code window open
+        Service-->>Agent: 200 OK (post-claim access_token + v2 identity_assertion) | authorization_pending
+      else user_code expired (outer claim window still open)
+        Service-->>Agent: 400 expired_token
+        Agent->>Service: POST /agent/identity/claim<br/>{ claim_token, email }
+        Service-->>Agent: 200 OK (fresh claim_attempt: new user_code + verification_uri)
+        Agent-->>User: Surface new user_code + verification_uri
+      end
     end
 ```

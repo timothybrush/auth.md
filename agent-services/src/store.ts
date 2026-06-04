@@ -442,7 +442,7 @@ export function findRegistrationByClaimViewHash(
   return undefined;
 }
 
-export function recordAnonymousClaimAttempt(
+export function recordClaimAttempt(
   registration: Registration,
   email: string,
 ): {
@@ -506,7 +506,7 @@ export type CompleteClaimResult =
 /**
  * Called by the user-facing `/claim` form handler after authenticating the
  * user via the session cookie. The agent never reaches this code path —
- * it polls `/agent/identity/claim/view` for the resulting status.
+ * it polls `/oauth2/token` with the claim grant for the resulting status.
  */
 export function completeClaim(
   registration: Registration,

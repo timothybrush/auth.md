@@ -304,15 +304,20 @@ Use `access_token` immediately on `/api/resource`; cache `identity_assertion` fo
 
 For **anonymous** flows, completion of the ceremony **revokes** any pre-claim access_tokens you held. Use the post-claim access_token from this response; drop the pre-claim one. The pre-claim `identity_assertion` (v1) also gets superseded by the v2 returned here — the v2 carries the user's email/email_verified claims, the v1 didn't.
 
-If the ceremony window passes without the user finishing:
+If the `user_code` window passes without the user finishing:
 
 ```json
 { "error": "expired_token", "error_description": "..." }
 ```
 
-Re-run Step 4a (anonymous) or re-register (email-verification) to start a fresh ceremony.
+Two cases distinguish what to do next:
 
-Honor `interval` (in seconds); on `slow_down` back off. Stop polling once the user-facing window (`expires_in`, from the start of the ceremony) has passed — the next poll will return `expired_token`.
+- **Registration is still active** (most common — the user_code's 10-minute timer expired but the outer claim window is still open): call `POST /agent/identity/claim` with the same `claim_token` and the same `email` to mint a fresh ceremony block. Surface the new `user_code` and `verification_uri` to the user and resume polling. This works for both anonymous and email-verification registrations.
+- **Registration itself has expired** (the outer claim window — typically 24h — has closed): start over at Step 3.
+
+If you can't tell which it is from context, try re-initiating first; the claim endpoint returns `410 claim_expired` if the registration is gone, at which point you restart at Step 3.
+
+Honor `interval` (in seconds); on `slow_down` back off. The next poll after `expires_in` will return `expired_token`.
 
 ## Step 5 — Exchange the assertion
 
@@ -374,7 +379,7 @@ Errors at `/agent/identity` and `/agent/identity/claim/*` use profile-specific c
 | `invalid_client`             | `/oauth2/token`                  | `client_id` not recognized. Re-read AS metadata.                                                                                                                                       |
 | `unsupported_grant_type`     | `/oauth2/token`                  | `grant_type` is not one of the two supported values (`urn:ietf:params:oauth:grant-type:jwt-bearer` for token exchange, `urn:workos:agent-auth:grant-type:claim` for ceremony polling). |
 | `authorization_pending`      | `/oauth2/token` (claim grant)    | User hasn't completed the ceremony yet. Honor `interval` from the ceremony block; retry.                                                                                               |
-| `expired_token`              | `/oauth2/token` (claim grant)    | `claim_token` is unknown or the ceremony window closed. Restart at Step 3.                                                                                                             |
+| `expired_token`              | `/oauth2/token` (claim grant)    | `user_code` window or outer claim window has closed. Re-call `/agent/identity/claim` to mint a fresh user_code; if that returns `claim_expired`, restart at Step 3.                    |
 | `slow_down`                  | `/oauth2/token` (claim grant)    | Polling too fast. Add at least 5s to your `interval` and retry.                                                                                                                        |
 | `rate_limited` (429)         | any                              | Back off and retry.                                                                                                                                                                    |
 

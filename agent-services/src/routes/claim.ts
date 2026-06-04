@@ -14,7 +14,8 @@ import {
 
 /*
  * User-facing claim form. Cookie-gated by /login. The agent never reaches
- * this code — it polls /agent/identity/claim/view for the resulting status.
+ * this code — it polls /oauth2/token with
+ * grant_type=urn:workos:agent-auth:grant-type:claim for the resulting status.
  *
  * The query parameter `claim_attempt_token` (an extension to RFC 8628's
  * verification URL) identifies which registration this page is for, without

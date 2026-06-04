@@ -165,9 +165,33 @@ async function handleClaimGrant(
   }
   if (registration.status !== "claimed") {
     /*
+     * The user_code itself expires faster than the outer claim window
+     * (userCodeTtlSeconds vs claim.expires_at). If the user_code window
+     * has closed but the registration is still active, the form-action
+     * endpoint would refuse a submission and the agent would otherwise
+     * poll authorization_pending until the outer window expires. Return
+     * expired_token so the agent knows to re-mint via /agent/identity/claim.
+     */
+    const attempt = registration.claim?.attempt;
+    if (attempt && attempt.user_code_expires_at.getTime() < Date.now()) {
+      oauthError(
+        res,
+        "expired_token",
+        "The user_code window has closed. Re-initiate the claim ceremony at the claim_endpoint.",
+      );
+      return;
+    }
+    /*
      * RFC 8628 §3.5: while the user hasn't completed the ceremony, return
      * authorization_pending. The agent is expected to retry after
      * `interval` seconds.
+     *
+     * A production service should also issue `slow_down` here when it
+     * detects polling faster than `interval` — typically by recording the
+     * last-poll timestamp per claim_token (Redis SETEX or similar) and
+     * returning `slow_down` when the gap is below the advertised cadence.
+     * Omitted from this demo to keep the store in-memory; the error code
+     * is declared in OAuthErrorCode so callers can branch on it if added.
      */
     oauthError(
       res,
