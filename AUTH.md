@@ -154,7 +154,7 @@ The response has two shapes depending on whether the service already has a deleg
 
 Keep `identity_assertion` and go to [Step 5](#step-5--exchange-the-assertion).
 
-**Step-up required (401)** — `(iss, sub)` is unknown but the ID-JAG's verified email or phone matched an existing account at the service. The service won't silently bind the delegation — the user has to confirm linking the provider identity to their account.
+**Confirmation required (401)** — `(iss, sub)` is unknown but the ID-JAG's verified email or phone matched an existing account at the service. The service won't silently bind the delegation — the user has to confirm linking the provider identity to their account.
 
 ```http
 HTTP/1.1 401 Unauthorized
@@ -180,9 +180,9 @@ WWW-Authenticate: AgentAuth error="interaction_required", error_description="…
 
 Same ceremony block as email-verification — the user signs in to the service, sees a confirmation page that names your provider ("**Acme Provider** is asking to link this account so the agent it runs can act on your behalf"), and types the `user_code` to confirm. Surface `verification_uri` + `user_code` to the user (see [Step 4b](#4b-hand-off-to-the-user)) and poll the token endpoint (see [Step 4c](#4c-poll-for-completion)).
 
-After the user confirms, the next presentation of an ID-JAG for the same `(iss, sub, aud)` hits the clean-match path.
+After the user confirms, the next presentation of an ID-JAG for the same `(iss, sub, aud)` is accepted directly — no confirmation needed.
 
-**Login required (401)** — `auth_time` is missing or older than the service's max-age. The agent has to go back to its own provider, get the user to re-authenticate there (e.g., `prompt=login` on the provider's auth endpoint), and re-mint a fresh ID-JAG. This is distinct from step-up: nothing the user does at the service helps; the freshness has to be established upstream.
+**Login required (401)** — `auth_time` is missing or older than the service's max-age. The agent has to go back to its own provider, get the user to re-authenticate there (e.g., `prompt=login` on the provider's auth endpoint), and re-mint a fresh ID-JAG. This is distinct from the confirmation case above: nothing the user does at the service helps; the freshness has to be established upstream.
 
 ```http
 HTTP/1.1 401 Unauthorized
