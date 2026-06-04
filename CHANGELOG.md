@@ -1,6 +1,6 @@
 # auth.md Changelog
 
-## v0.3.0 (2026-06-04)
+## v0.3.0 (2026-06-03)
 
 Switches the provider-driven invalidation channel from OIDC Back-Channel Logout to [RFC 8417](https://datatracker.ietf.org/doc/html/rfc8417) Security Event Token push delivery per [RFC 8935](https://datatracker.ietf.org/doc/html/rfc8935). Same trust path as before (issuer JWKS, jti replay protection), with a wire format and event shape that generalizes beyond revocation.
 
