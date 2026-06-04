@@ -218,6 +218,12 @@ export async function verifySecEventJwt(
     return { ok: true, claims };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
+    if (/expired|exp/i.test(message)) {
+      return { ok: false, error: { code: "expired", message } };
+    }
+    if (/audience/i.test(message)) {
+      return { ok: false, error: { code: "invalid_audience", message } };
+    }
     return { ok: false, error: { code: "invalid_signature", message } };
   }
 }
