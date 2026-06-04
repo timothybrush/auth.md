@@ -270,13 +270,6 @@ agentAuthRouter.post(config.claimEndpointPath, async (req, res) => {
     });
     return;
   }
-  if (registration.kind === "id_jag") {
-    res.status(409).json({
-      error: "claimed_or_in_flight",
-      message: "ID-JAG registrations do not require a claim ceremony.",
-    });
-    return;
-  }
   if (registration.status === "expired") {
     res
       .status(410)
