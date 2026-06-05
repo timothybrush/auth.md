@@ -1,5 +1,18 @@
 # auth.md Changelog
 
+## v0.5.0 (2026-06-05)
+
+Gates first-time linking of an ID-JAG to an existing account behind a user-confirmation ceremony, and requires fresh `auth_time` on every ID-JAG. Without this confirmation gate, any trusted provider could mint an ID-JAG with `email_verified: true` for a victim's email and silently take over their account. Without the freshness gate, an agent could use a stale upstream session.
+
+### Added
+
+- `interaction_required` (401) from `/agent/identity` when an ID-JAG matches an existing account by verified email/phone but no `(iss, sub)` delegation exists yet. Body carries an RFC 8628-shaped `claim` block (`user_code`, `verification_uri`, `expires_in`, `interval`); the agent surfaces the code and URL to the user, who signs in at the service and confirms the link.
+- `login_required` (401) from `/agent/identity` when `auth_time` is missing, older than the service's `max_age`, or set unreasonably in the future. `WWW-Authenticate` carries `max_age`. The agent's recourse is to re-authenticate at the provider (`prompt=login` or equivalent).
+
+### Changed
+
+- ID-JAGs are now required to include a fresh `auth_time` claim. Tokens whose `auth_time` is missing, older than the service's `max_age` window, or further than the clock-skew tolerance in the future are rejected. This prevents use of a stale user session for authorization.
+
 ## v0.4.0 (2026-06-04)
 
 Inverts the claim ceremony and consolidates polling onto the standard `/oauth2/token` endpoint. Service emails have been removed in favor of the agent surfacing the verification URL and `user_code` to the user, who signs in through the service's own browser-based session (reusing any existing session, SSO, MFA the service applies) and confirms the code on a service-owned page. This borrows the ceremony shape from [RFC 8628 device authorization](https://datatracker.ietf.org/doc/html/rfc8628) (`user_code`, `verification_uri`, `expires_in`, `interval`) without overloading the IANA `device_code` grant.
@@ -7,7 +20,7 @@ Inverts the claim ceremony and consolidates polling onto the standard `/oauth2/t
 ### Added
 
 - `urn:workos:agent-auth:grant-type:claim` grant at `/oauth2/token` — the agent polls here with the `claim_token` for ceremony completion. Returns `authorization_pending` while waiting, `expired_token` once the window closes, and a standard OAuth token response on success, extended with `identity_assertion` + `assertion_expires` so the agent has a refresh path. A profile-specific URN so services that also implement standard RFC 8628 device authorization at the same endpoint don't collide.
-- Registration responses now include a ceremony block — under `claim` for email-verification (returned with the registration) or under `claim_attempt` for anonymous (returned from `/agent/identity/claim`). Both carry `user_code`, `verification_uri`, `expires_in`, `interval`.
+- Registration responses now include the ceremony fields (`user_code`, `verification_uri`, `expires_in`, `interval`) — under `claim` for email-verification (returned with the registration) or under `claim_attempt` for anonymous (returned from `/agent/identity/claim`).
 - `/login` — service-owned mock IdP with a cookie-bound session.
 - `/claim` — service-owned, cookie-gated form where the user types the `user_code` to complete the ceremony.
 

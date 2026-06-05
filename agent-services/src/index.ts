@@ -86,7 +86,7 @@ async function main() {
   app.listen(config.port, () => {
     console.log(`[consumer] listening on ${config.baseUrl}`);
     console.log(
-      `[consumer] trusted issuers: ${config.trustedIssuers.join(", ")}`,
+      `[consumer] trusted issuers: ${config.trustedIssuers.map((i) => i.iss).join(", ")}`,
     );
   });
 }
