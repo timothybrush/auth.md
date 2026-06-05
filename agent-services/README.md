@@ -446,7 +446,7 @@ Reject ID-JAGs with neither a verified email nor a verified phone — there's no
 
 ### Claim Ceremony
 
-Both `anonymous` and `verified_email` flows funnel into the same ceremony: the service mints a `user_code`, the agent surfaces it to the user along with a `verification_uri`, the user signs in to the service and types the code on a service-owned form, the agent polls for completion. The ceremony block borrows from [RFC 8628 device authorization](https://datatracker.ietf.org/doc/html/rfc8628), and polling happens at the standard `token_endpoint` with a profile-specific grant (`urn:workos:agent-auth:grant-type:claim`).
+Both `anonymous` and `verified_email` flows funnel into the same ceremony: the service mints a `user_code`, the agent surfaces it to the user along with a `verification_uri`, the user signs in to the service and types the code on a service-owned form, the agent polls for completion. The ceremony fields (`user_code`, `verification_uri`, `expires_in`, `interval`) borrow from [RFC 8628 device authorization](https://datatracker.ietf.org/doc/html/rfc8628), and polling happens at the standard `token_endpoint` with a profile-specific grant (`urn:workos:agent-auth:grant-type:claim`).
 
 
 **Why a profile-specific grant URN.** Polling could in principle reuse `urn:ietf:params:oauth:grant-type:device_code`, but a service implementing standard RFC 8628 device authorization at the same token endpoint would then have to disambiguate by inspecting the bearer value (claim_token vs device_code). A custom URN routes by grant_type, which is where OAuth implementations already dispatch — no collision risk.
@@ -473,7 +473,7 @@ The `verification_uri` routes through `/login` first so the user authenticates b
 
 #### POST /agent/identity/claim — Anonymous claim entry
 
-Anonymous-only. Verified-email registrations skip this — their ceremony block is bundled into the `/agent/identity` registration response.
+Anonymous-only. Verified-email registrations skip this — their `claim` block is bundled into the `/agent/identity` registration response.
 
 Request:
 
@@ -495,7 +495,7 @@ Response (200):
   "status": "initiated",
   "expires_at": "2026-05-04T12:10:00.000Z",
   "claim_attempt": {
-    /* ceremony block, see above */
+    /* claim_attempt fields, see above */
   }
 }
 ```

@@ -258,7 +258,7 @@ The `identity_assertion` exchanges at `/oauth2/token` for an access_token with `
 
 ## Step 4 — Claim ceremony
 
-The end goal: get a signed-in user to confirm a 6-digit `user_code` **you supply them**. The code travels from you → user, not from the service → user; the user authenticates to the service and types the code into a page the service owns. This binds the agent's context to the user's authenticated session at the service. The ceremony block borrows its shape from [RFC 8628 device authorization](https://datatracker.ietf.org/doc/html/rfc8628), and polling happens at the standard `token_endpoint` with a profile-specific grant.
+The end goal: get a signed-in user to confirm a 6-digit `user_code` **you supply them**. The code travels from you → user, not from the service → user; the user authenticates to the service and types the code into a page the service owns. This binds the agent's context to the user's authenticated session at the service. The ceremony fields (`user_code`, `verification_uri`, `expires_in`, `interval`) borrow their shape from [RFC 8628 device authorization](https://datatracker.ietf.org/doc/html/rfc8628), and polling happens at the standard `token_endpoint` with a profile-specific grant.
 
 ### 4a. Get the ceremony materials
 
@@ -293,7 +293,7 @@ Response (200):
 }
 ```
 
-The ceremony block — nested under `claim_attempt` here and `claim` in the email-verification registration response — borrows its shape from [RFC 8628 device-authorization](https://datatracker.ietf.org/doc/html/rfc8628), with `claim_attempt_token` embedded in `verification_uri` so the URL identifies the registration without leaking the user-typed `user_code`. Surface `verification_uri` + `user_code` to the user; poll the standard `token_endpoint` from AS metadata with the claim grant (see 4c).
+The `claim_attempt` block here — same shape as the `claim` block in the email-verification registration response — borrows from [RFC 8628 device-authorization](https://datatracker.ietf.org/doc/html/rfc8628), with `claim_attempt_token` embedded in `verification_uri` so the URL identifies the registration without leaking the user-typed `user_code`. Surface `verification_uri` + `user_code` to the user; poll the standard `token_endpoint` from AS metadata with the claim grant (see 4c).
 
 The `email` you supply on anonymous `/claim` binds the registration to the human you intend the agent to act on behalf of — only that signed-in user can complete the ceremony. Without this, a third party who intercepted the `user_code` could claim the agent for themselves.
 
@@ -355,7 +355,7 @@ If the `user_code` window passes without the user finishing:
 
 Two cases distinguish what to do next:
 
-- **Registration is still active** (most common — the user_code's 10-minute timer expired but the outer claim window is still open): call `POST /agent/identity/claim` with the same `claim_token` and the same `email` to mint a fresh ceremony block. Surface the new `user_code` and `verification_uri` to the user and resume polling. This works for both anonymous and email-verification registrations.
+- **Registration is still active** (most common — the user_code's 10-minute timer expired but the outer claim window is still open): call `POST /agent/identity/claim` with the same `claim_token` and the same `email` to mint a fresh `claim_attempt` block. Surface the new `user_code` and `verification_uri` to the user and resume polling. This works for both anonymous and email-verification registrations.
 - **Registration itself has expired** (the outer claim window — typically 24h — has closed): start over at Step 3.
 
 If you can't tell which it is from context, try re-initiating first; the claim endpoint returns `410 claim_expired` if the registration is gone, at which point you restart at Step 3.
@@ -423,7 +423,7 @@ Errors at `/agent/identity` and `/agent/identity/claim/*` use profile-specific c
 | `invalid_grant`              | `/oauth2/token`               | Assertion expired, revoked, replayed, or otherwise failed verification. Restart at [Step 3](#step-3--register) to mint a fresh one.                                                    |
 | `invalid_client`             | `/oauth2/token`               | `client_id` not recognized. Re-read AS metadata.                                                                                                                                       |
 | `unsupported_grant_type`     | `/oauth2/token`               | `grant_type` is not one of the two supported values (`urn:ietf:params:oauth:grant-type:jwt-bearer` for token exchange, `urn:workos:agent-auth:grant-type:claim` for ceremony polling). |
-| `authorization_pending`      | `/oauth2/token` (claim grant) | User hasn't completed the ceremony yet. Honor `interval` from the ceremony block; retry.                                                                                               |
+| `authorization_pending`      | `/oauth2/token` (claim grant) | User hasn't completed the ceremony yet. Honor `interval` from the `claim` or `claim_attempt` block; retry.                                                                             |
 | `expired_token`              | `/oauth2/token` (claim grant) | `user_code` window or outer claim window has closed. Re-call `/agent/identity/claim` to mint a fresh user_code; if that returns `claim_expired`, restart at Step 3.                    |
 | `slow_down`                  | `/oauth2/token` (claim grant) | Polling too fast. Add at least 5s to your `interval` and retry.                                                                                                                        |
 | `rate_limited` (429)         | any                           | Back off and retry.                                                                                                                                                                    |

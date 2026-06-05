@@ -20,7 +20,7 @@ Inverts the claim ceremony and consolidates polling onto the standard `/oauth2/t
 ### Added
 
 - `urn:workos:agent-auth:grant-type:claim` grant at `/oauth2/token` — the agent polls here with the `claim_token` for ceremony completion. Returns `authorization_pending` while waiting, `expired_token` once the window closes, and a standard OAuth token response on success, extended with `identity_assertion` + `assertion_expires` so the agent has a refresh path. A profile-specific URN so services that also implement standard RFC 8628 device authorization at the same endpoint don't collide.
-- Registration responses now include a ceremony block — under `claim` for email-verification (returned with the registration) or under `claim_attempt` for anonymous (returned from `/agent/identity/claim`). Both carry `user_code`, `verification_uri`, `expires_in`, `interval`.
+- Registration responses now include the ceremony fields (`user_code`, `verification_uri`, `expires_in`, `interval`) — under `claim` for email-verification (returned with the registration) or under `claim_attempt` for anonymous (returned from `/agent/identity/claim`).
 - `/login` — service-owned mock IdP with a cookie-bound session.
 - `/claim` — service-owned, cookie-gated form where the user types the `user_code` to complete the ceremony.
 
