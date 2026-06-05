@@ -250,7 +250,7 @@ The agent's recourse is to refresh the user's authentication at _its provider_ (
 
 ##### First-link step-up
 
-When the matcher finds an existing user by verified email/phone but no `(iss, sub)` delegation yet, do not silently bind the delegation. Return HTTP 401 with a ceremony block — the user has to confirm linking the provider identity to their account:
+When the matcher finds an existing user by verified email/phone but no `(iss, sub)` delegation yet, do not silently bind the delegation. Return HTTP 401 with a `claim` block — the user has to confirm linking the provider identity to their account:
 
 ```http
 WWW-Authenticate: AgentAuth error="interaction_required", error_description="..."
@@ -275,9 +275,11 @@ WWW-Authenticate: AgentAuth error="interaction_required", error_description="...
 }
 ```
 
-The ceremony block is the same shape as the verified-email and anonymous flows ([Claim Ceremony](#claim-ceremony)). The user-facing `/claim` page renders provider-aware copy for ID-JAG registrations ("**Acme** is asking to link this account…") — the provider display name comes from your trust list. After completion, the agent's next poll picks up the bound delegation. The same `(iss, sub, aud)` triple is keyed on a single registration row whether pending or bound, so repeat presentations during step-up reuse the row and re-issue a fresh ceremony.
+The `claim` block is the same shape as the verified-email and anonymous flows ([Claim Ceremony](#claim-ceremony)). The user-facing `/claim` page renders provider-aware copy for ID-JAG registrations ("**Acme** is asking to link this account…") — the provider display name comes from your trust list. After completion, the agent's next poll picks up the bound delegation. The same `(iss, sub, aud)` triple is keyed on a single registration row whether pending or bound, so repeat presentations during step-up reuse the row and re-issue a fresh ceremony.
 
-**Why step up.** Without it, any trusted provider could mint an ID-JAG with `email_verified: true` for `victim@example.com` and silently take over that user's account at your service. The step-up gate makes the user's signed-in session at your service the binding signal for linking external identities. In production, the trust list should also rotate provider display names through CIMD ([Client ID Metadata Document](https://datatracker.ietf.org/doc/draft-ietf-oauth-client-id-metadata-document/)) so a malicious provider can't pick its own marketing copy on your claim page.
+**Why step up.** Without it, any trusted provider could mint an ID-JAG with `email_verified: true` for `victim@example.com` and silently take over that user's account at your service. Step-up gates the binding on the user being signed in at your service — their authenticated session is what authorizes the link.
+
+In production, services often source provider display names from CIMD ([Client ID Metadata Document](https://datatracker.ietf.org/doc/draft-ietf-oauth-client-id-metadata-document/)) instead of maintaining them by hand — the provider hosts a metadata document at a stable URL and the service fetches it. Either way, the service decides what `/claim` renders; never render a `client_name` value the provider sets directly, since a malicious provider would pick its own marketing copy.
 
 **The claim ceremony is your primary place to enforce authorization policies.** The agent never authenticates the user; the agent presents an ID-JAG (which the provider authenticated, on the provider's terms) and the service authenticates the user via its existing `/login` flow during the ceremony. Whatever conditions you normally enforce in interactive browser sign-in — enterprise SSO, MFA, bot detection, terms re-acceptance, just-in-time provisioning checks — apply here, with no agent-auth-specific exceptions. If `acme.com` is enterprise-SSO-managed in your tenant, an ID-JAG asserting `alice@acme.com` from a provider Acme should land the user on a sign-in surface that refuses to complete until Alice authenticates through Acme's IdP. The agent polls until the user finishes; from the agent's perspective the flow is identical whether the gate is "no gate," "MFA," or "full enterprise SSO." This is how ID-JAGs don't bypass your domain-bound policies.
 

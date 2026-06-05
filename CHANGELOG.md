@@ -1,12 +1,12 @@
 # auth.md Changelog
 
-## v0.5.0 (2026-06-04)
+## v0.5.0 (2026-06-05)
 
 Gates first-time linking of an ID-JAG to an existing account behind a user-confirmation ceremony, and requires fresh `auth_time` on every ID-JAG. Without this confirmation gate, any trusted provider could mint an ID-JAG with `email_verified: true` for a victim's email and silently take over their account. Without the freshness gate, an agent could use a stale upstream session.
 
 ### Added
 
-- `interaction_required` (401) from `/agent/identity` when an ID-JAG matches an existing account by verified email/phone but no `(iss, sub)` delegation exists yet. Body carries the RFC 8628-shaped ceremony block; the agent surfaces `user_code` + `verification_uri` to the user, who signs in at the service and confirms the link.
+- `interaction_required` (401) from `/agent/identity` when an ID-JAG matches an existing account by verified email/phone but no `(iss, sub)` delegation exists yet. Body carries an RFC 8628-shaped `claim` block (`user_code`, `verification_uri`, `expires_in`, `interval`); the agent surfaces the code and URL to the user, who signs in at the service and confirms the link.
 - `login_required` (401) from `/agent/identity` when `auth_time` is missing, older than the service's `max_age`, or set unreasonably in the future. `WWW-Authenticate` carries `max_age`. The agent's recourse is to re-authenticate at the provider (`prompt=login` or equivalent).
 
 ### Changed
