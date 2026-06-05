@@ -11,7 +11,7 @@ Gates first-time linking of an ID-JAG to an existing account behind a user-confi
 
 ### Changed
 
-- ID-JAGs are now required to include a fresh `auth_time` claim. Tokens whose `auth_time` is missing, older than the service's `max_age` window, or further than the clock-skew tolerance in the future are rejected. Applied universally — including already-delegated `(iss, sub)` pairs — to prevent indefinite session piggy-backing.
+- ID-JAGs are now required to include a fresh `auth_time` claim. Tokens whose `auth_time` is missing, older than the service's `max_age` window, or further than the clock-skew tolerance in the future are rejected. This prevents use of a stale user session for authorization.
 
 ## v0.4.0 (2026-06-04)
 
