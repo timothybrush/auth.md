@@ -2,7 +2,7 @@
 
 ## v0.5.0 (2026-06-04)
 
-Gates first-time linking of an ID-JAG to an existing account behind a user-confirmation ceremony, and requires fresh `auth_time` on every ID-JAG. Without this confirmation gate, any trusted provider could mint an ID-JAG with `email_verified: true` for a victim's email and silently take over their account. Without the freshness gate, an agent could ride an indefinitely-stale upstream session.
+Gates first-time linking of an ID-JAG to an existing account behind a user-confirmation ceremony, and requires fresh `auth_time` on every ID-JAG. Without this confirmation gate, any trusted provider could mint an ID-JAG with `email_verified: true` for a victim's email and silently take over their account. Without the freshness gate, an agent could use a stale upstream session.
 
 ### Added
 
