@@ -7,7 +7,7 @@ Gates first-time linking of an ID-JAG to an existing account behind a user-confi
 ### Added
 
 - `interaction_required` (401) from `/agent/identity` when an ID-JAG matches an existing account by verified email/phone but no `(iss, sub)` delegation exists yet. Body carries the RFC 8628-shaped ceremony block; the agent surfaces `user_code` + `verification_uri` to the user, who signs in at the service and confirms the link.
-- `login_required` (401) from `/agent/identity` when `auth_time` is missing, older than the service's `max_age`, or set unreasonably in the future. `WWW-Authenticate` carries `max_age`. The agent's recourse is at its provider (`prompt=login` or equivalent) — nothing the user can do at the service helps.
+- `login_required` (401) from `/agent/identity` when `auth_time` is missing, older than the service's `max_age`, or set unreasonably in the future. `WWW-Authenticate` carries `max_age`. The agent's recourse is to re-authenticate at the provider (`prompt=login` or equivalent).
 
 ### Changed
 
