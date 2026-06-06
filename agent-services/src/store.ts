@@ -17,7 +17,7 @@ export type Credential = {
   issued_at: Date;
   expires_at?: Date;
   revoked: boolean;
-  source: "identity_assertion" | "anonymous" | "email_verification";
+  source: "identity_assertion" | "anonymous" | "service_auth";
   iss?: string;
   sub?: string;
   aud?: string;
@@ -32,7 +32,7 @@ export type Delegation = {
   last_seen: Date;
 };
 
-export type RegistrationKind = "anonymous" | "email_verification" | "id_jag";
+export type RegistrationKind = "anonymous" | "service_auth" | "id_jag";
 
 /**
  * The user-facing leg of the claim ceremony. Tracks the `claim_attempt_token`
@@ -206,7 +206,7 @@ export function issueAccessToken(input: {
   /** Optional: anonymous registrations (pre-claim) have no bound user yet. */
   userId?: string;
   scope: string[];
-  source: "identity_assertion" | "email_verification" | "anonymous";
+  source: "identity_assertion" | "service_auth" | "anonymous";
   iss?: string;
   sub?: string;
   aud?: string;
@@ -307,12 +307,12 @@ export function createAnonymousRegistration(): {
 }
 
 /**
- * Email-verification registrations bundle the claim ceremony: the agent
+ * service_auth registrations bundle the claim ceremony: the agent
  * receives a `user_code` and `verification_uri` in the registration response
  * and surfaces both to the user. The user signs in to the service, types the
  * code on the claim page, and ownership transfers.
  */
-export function createEmailVerificationRegistration(input: { email: string }): {
+export function createServiceAuthRegistration(input: { email: string }): {
   registration: Registration;
   claimTokenPlaintext: string;
   claimViewTokenPlaintext: string;
@@ -327,7 +327,7 @@ export function createEmailVerificationRegistration(input: { email: string }): {
 
   const registration = new Registration({
     id: registrationId,
-    kind: "email_verification",
+    kind: "service_auth",
     created_at: now,
     claim: {
       token_hash: sha256Hex(claimTokenPlaintext),
@@ -369,7 +369,7 @@ function idJagRegistrationKey(iss: string, sub: string, aud: string): string {
  *    delegation or JIT-provisioned). No ceremony; mark claimed.
  *  - `{ email }` — the matcher found an account matching the ID-JAG's
  *    verified email/phone but no delegation yet. The user must confirm via
- *    the same user_code ceremony email-verification uses. Returns the
+ *    the same user_code ceremony service_auth uses. Returns the
  *    ceremony plaintexts so the route can surface them to the agent.
  *
  * On step-up retry (second presentation while a ceremony is in flight),

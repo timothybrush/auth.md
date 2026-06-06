@@ -57,11 +57,10 @@ Hosted at `/.well-known/oauth-authorization-server`:
     "identity_endpoint": "https://auth.service.example.com/agent/identity",
     "claim_endpoint": "https://auth.service.example.com/agent/identity/claim",
     "events_endpoint": "https://auth.service.example.com/agent/event/notify",
-    "identity_types_supported": ["anonymous", "identity_assertion"],
+    "identity_types_supported": ["anonymous", "identity_assertion", "service_auth"],
     "identity_assertion": {
       "assertion_types_supported": [
-        "urn:ietf:params:oauth:token-type:id-jag",
-        "verified_email"
+        "urn:ietf:params:oauth:token-type:id-jag"
       ]
     },
     "events_supported": [
@@ -113,7 +112,7 @@ sequenceDiagram
     participant Agent
     participant Service
 
-    Agent->>Service: POST /agent/identity<br/>{ type: identity_assertion, assertion_type: verified_email, assertion: email }
+    Agent->>Service: POST /agent/identity<br/>{ type: service_auth, login_hint: email }
     Service-->>Agent: 200 OK (claim_token, claim: user_code + verification_uri)
     Agent-->>User: Surface user_code + verification_uri
     User->>Service: GET verification_uri (signs in, lands on /claim)

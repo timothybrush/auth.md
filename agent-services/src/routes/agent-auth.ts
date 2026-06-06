@@ -1,16 +1,11 @@
 import express, { Router } from "express";
 import { config } from "../config.js";
 import { matchOrProvision } from "../matcher.js";
-import {
-  ASSERTION_TYPES,
-  agentAuthBody,
-  claimBody,
-  parseBody,
-} from "../schemas.js";
+import { agentAuthBody, claimBody, parseBody } from "../schemas.js";
 import {
   type Registration,
   createAnonymousRegistration,
-  createEmailVerificationRegistration,
+  createServiceAuthRegistration,
   findOrCreateIdJagRegistration,
   findRegistrationByClaimHash,
   recordClaimAttempt,
@@ -48,10 +43,10 @@ agentAuthRouter.post(config.identityEndpointPath, async (req, res) => {
   }
 
   if (parsed.value.type === "identity_assertion") {
-    if (parsed.value.assertion_type === ASSERTION_TYPES.EMAIL_ASSERTION) {
-      return handleEmailAssertion(parsed.value, res);
-    }
     return handleIdJagAssertion(parsed.value, res);
+  }
+  if (parsed.value.type === "service_auth") {
+    return handleServiceAuth(parsed.value, res);
   }
 
   const { registration, claimTokenPlaintext } = createAnonymousRegistration();
@@ -216,8 +211,8 @@ function escapeHeader(s: string): string {
   return s.replace(/[\\"]/g, "\\$&");
 }
 
-async function handleEmailAssertion(
-  body: { assertion: string },
+async function handleServiceAuth(
+  body: { login_hint: string },
   res: express.Response,
 ): Promise<void> {
   const {
@@ -226,15 +221,15 @@ async function handleEmailAssertion(
     claimViewTokenPlaintext,
     userCode,
     userCodeExpiresAt,
-  } = createEmailVerificationRegistration({ email: body.assertion });
+  } = createServiceAuthRegistration({ email: body.login_hint });
 
   console.log(
-    `[agent-auth] email-verification registration=${registration.id} email=${body.assertion}`,
+    `[agent-auth] service_auth registration=${registration.id} login_hint=${body.login_hint}`,
   );
 
   res.json({
     registration_id: registration.id,
-    registration_type: "email-verification",
+    registration_type: "service_auth",
     claim_url: `${config.baseUrl}${config.claimEndpointPath}`,
     claim_token: claimTokenPlaintext,
     claim_token_expires: registration.claim!.expires_at.toISOString(),
@@ -251,7 +246,7 @@ async function handleEmailAssertion(
  * Initiates or re-mints a claim ceremony. Two registration kinds reach here:
  *   - anonymous: first initiation (binds the email) or refresh (after the
  *     user_code window closed before the user could complete).
- *   - email_verification: refresh only (the initial ceremony was minted at
+ *   - service_auth: refresh only (the initial ceremony was minted at
  *     /agent/identity); the supplied email must match the registration.
  */
 agentAuthRouter.post(config.claimEndpointPath, async (req, res) => {
@@ -284,7 +279,7 @@ agentAuthRouter.post(config.claimEndpointPath, async (req, res) => {
     return;
   }
   /*
-   * Email is immutable once bound. For email_verification it's bound at
+   * Email is immutable once bound. For service_auth it's bound at
    * registration time (from the agent's identity claim). For anonymous
    * it's bound on the first /claim call; subsequent re-initiations must
    * supply the same email — otherwise an agent could redirect the
@@ -305,7 +300,7 @@ agentAuthRouter.post(config.claimEndpointPath, async (req, res) => {
 
   /*
    * Mint a fresh ceremony (new claim_attempt_token + new user_code). For
-   * anonymous this binds the supplied email; for email-verification it refreshes
+   * anonymous this binds the supplied email; for service_auth it refreshes
    * an expired user_code without changing the bound email. Any prior URL
    * stops working.
    */

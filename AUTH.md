@@ -72,11 +72,10 @@ Response shape:
     "identity_endpoint": "https://auth.service.example.com/agent/identity",
     "claim_endpoint": "https://auth.service.example.com/agent/identity/claim",
     "events_endpoint": "https://auth.service.example.com/agent/event/notify",
-    "identity_types_supported": ["anonymous", "identity_assertion"],
+    "identity_types_supported": ["anonymous", "identity_assertion", "service_auth"],
     "identity_assertion": {
       "assertion_types_supported": [
-        "urn:ietf:params:oauth:token-type:id-jag",
-        "verified_email"
+        "urn:ietf:params:oauth:token-type:id-jag"
       ]
     },
     "events_supported": [
@@ -97,7 +96,7 @@ The outer fields restate the PRM. The top-level OAuth endpoints (`issuer`, `toke
 - `agent_auth.claim_endpoint` — where you POST the claim invite for anonymous registrations (Step 4) and where the agent polls for ceremony completion at `/view`.
 - `agent_auth.events_endpoint` — where the provider POSTs a [Security Event Token (RFC 8417)](https://datatracker.ietf.org/doc/html/rfc8417) per [RFC 8935](https://datatracker.ietf.org/doc/html/rfc8935) push delivery to notify the service of upstream identity events. You don't call this; it tells you what to expect.
 - `agent_auth.identity_types_supported` — which registration methods this service accepts. Pick yours from Step 2.
-- `agent_auth.identity_assertion.assertion_types_supported` — which assertion types this service accepts (ID-JAG, verified email, etc.).
+- `agent_auth.identity_assertion.assertion_types_supported` — which assertion types this service accepts under the `identity_assertion` shape (currently ID-JAG).
 - `agent_auth.events_supported` — event schemas this service can ingest (currently revocation). Informational; you don't act on these directly.
 
 ## Step 2 — Pick a method
@@ -105,18 +104,18 @@ The outer fields restate the PRM. The top-level OAuth endpoints (`issuer`, `toke
 Use this decision tree:
 
 1. **You have a session tied to a user identity and can exchange it for an ID-JAG, audience-bound to this service** → [identity_assertion + id-jag](#identity_assertion--id-jag).
-2. **You have only the user's email** → [identity_assertion + email](#identity_assertion--email). Claim ceremony required.
+2. **You have only the user's email** → [service_auth](#service_auth). Claim ceremony required.
 3. **You have neither** → [anonymous](#anonymous). Claim ceremony optional; deferred until the user wants to take ownership.
 
-Before sending: cross-check your choice against the `agent_auth` block. If the matching `*_supported` array doesn't list your method, this service won't accept that registration shape — pick another or stop.
+For `identity_assertion`, cross-check that your assertion type is in `agent_auth.identity_assertion.assertion_types_supported` — trust setup isn't enumerable by trial, so a missing entry means stop. For `service_auth` and `anonymous`, `identity_types_supported` is informational — send the body and fall back on the `*_not_enabled` error if the service opted out.
 
 ## Step 3 — Register
 
-Before sending an `identity_assertion` (either variant), surface the service's `resource_name` and `resource_logo_uri` (from Step 1a) and the scope set you'll be acting under, and confirm with the user. This is the user's only consent gate before their identity is asserted to the service. Skip this for `anonymous` — there is no user identity to assert.
+Before sending an `identity_assertion` or `service_auth` body, surface the service's `resource_name` and `resource_logo_uri` (from Step 1a) and the scope set you'll be acting under, and confirm with the user. This is the user's only consent gate before their identity is asserted to the service. Skip this for `anonymous` — there is no user identity to assert.
 
 ### identity_assertion + id-jag
 
-Before minting the ID-JAG, confirm your provider is on this service's trust list (publishing format is service-specific — check the AS metadata or service docs). If it isn't, fall back to `identity_assertion + email` or `anonymous`.
+Before minting the ID-JAG, confirm your provider is on this service's trust list (publishing format is service-specific — check the AS metadata or service docs). If it isn't, fall back to `service_auth` or `anonymous`.
 
 Mint the assertion with:
 
@@ -178,7 +177,7 @@ WWW-Authenticate: AgentAuth error="interaction_required", error_description="…
 }
 ```
 
-Same `claim` block as email-verification — the user signs in to the service, sees a confirmation page that names your provider ("**Acme Provider** is asking to link this account so the agent it runs can act on your behalf"), and types the `user_code` to confirm. Surface `verification_uri` + `user_code` to the user (see [Step 4b](#4b-hand-off-to-the-user)) and poll the token endpoint (see [Step 4c](#4c-poll-for-completion)).
+Same `claim` block as the `service_auth` registration response — the user signs in to the service, sees a confirmation page that names your provider ("**Acme Provider** is asking to link this account so the agent it runs can act on your behalf"), and types the `user_code` to confirm. Surface `verification_uri` + `user_code` to the user (see [Step 4b](#4b-hand-off-to-the-user)) and poll the token endpoint (see [Step 4c](#4c-poll-for-completion)).
 
 After the user confirms, the next presentation of an ID-JAG for the same `(iss, sub, aud)` is accepted directly — no confirmation needed.
 
@@ -195,16 +194,15 @@ WWW-Authenticate: AgentAuth error="login_required", max_age="3600", error_descri
 }
 ```
 
-### identity_assertion + email
+### service_auth
 
 ```http
 POST /agent/identity
 Content-Type: application/json
 
 {
-  "type": "identity_assertion",
-  "assertion_type": "verified_email",
-  "assertion": "user@example.com"
+  "type": "service_auth",
+  "login_hint": "user@example.com"
 }
 ```
 
@@ -213,7 +211,7 @@ Response (200):
 ```json
 {
   "registration_id": "reg_...",
-  "registration_type": "email-verification",
+  "registration_type": "service_auth",
   "claim_url": "https://auth.service.example.com/agent/identity/claim",
   "claim_token": "clm_...",
   "claim_token_expires": "2026-05-21T17:31:25.994Z",
@@ -262,7 +260,7 @@ The end goal: get a signed-in user to confirm a 6-digit `user_code` **you supply
 
 ### 4a. Get the ceremony materials
 
-For **email-verification** registrations, you already have them — they're in the `claim` block of the Step 3 response. Skip to 4b.
+For **service_auth** registrations, you already have them — they're in the `claim` block of the Step 3 response. Skip to 4b.
 
 For **anonymous** registrations, ask the service to start a ceremony:
 
@@ -293,7 +291,7 @@ Response (200):
 }
 ```
 
-The `claim_attempt` block here — same shape as the `claim` block in the email-verification registration response — borrows from [RFC 8628 device-authorization](https://datatracker.ietf.org/doc/html/rfc8628), with `claim_attempt_token` embedded in `verification_uri` so the URL identifies the registration without leaking the user-typed `user_code`. Surface `verification_uri` + `user_code` to the user; poll the standard `token_endpoint` from AS metadata with the claim grant (see 4c).
+The `claim_attempt` block here — same shape as the `claim` block in the `service_auth` registration response — borrows from [RFC 8628 device-authorization](https://datatracker.ietf.org/doc/html/rfc8628), with `claim_attempt_token` embedded in `verification_uri` so the URL identifies the registration without leaking the user-typed `user_code`. Surface `verification_uri` + `user_code` to the user; poll the standard `token_endpoint` from AS metadata with the claim grant (see 4c).
 
 The `email` you supply on anonymous `/claim` binds the registration to the human you intend the agent to act on behalf of — only that signed-in user can complete the ceremony. Without this, a third party who intercepted the `user_code` could claim the agent for themselves.
 
@@ -355,7 +353,7 @@ If the `user_code` window passes without the user finishing:
 
 Two cases distinguish what to do next:
 
-- **Registration is still active** (most common — the user_code's 10-minute timer expired but the outer claim window is still open): call `POST /agent/identity/claim` with the same `claim_token` and the same `email` to mint a fresh `claim_attempt` block. Surface the new `user_code` and `verification_uri` to the user and resume polling. This works for both anonymous and email-verification registrations.
+- **Registration is still active** (most common — the user_code's 10-minute timer expired but the outer claim window is still open): call `POST /agent/identity/claim` with the same `claim_token` and the same `email` to mint a fresh `claim_attempt` block. Surface the new `user_code` and `verification_uri` to the user and resume polling. This works for both anonymous and service_auth registrations.
 - **Registration itself has expired** (the outer claim window — typically 24h — has closed): start over at Step 3.
 
 If you can't tell which it is from context, try re-initiating first; the claim endpoint returns `410 claim_expired` if the registration is gone, at which point you restart at Step 3.
@@ -412,7 +410,7 @@ Errors at `/agent/identity` and `/agent/identity/claim/*` use profile-specific c
 | Code                         | Where                         | What to do                                                                                                                                                                             |
 | ---------------------------- | ----------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `anonymous_not_enabled`      | `/agent/identity`             | This service doesn't accept anonymous. Pick another method from Step 2.                                                                                                                |
-| `verified_email_not_enabled` | `/agent/identity`             | Email verification disabled here. Pick another method.                                                                                                                                 |
+| `service_auth_not_enabled`   | `/agent/identity`             | service_auth (email-based) disabled here. Pick another method.                                                                                                                         |
 | `issuer_not_enabled`         | `/agent/identity`             | Provider not on this service's trust list. Pick another method.                                                                                                                        |
 | `invalid_request`            | `/agent/identity`             | Body shape, missing claims, ID-JAG signature/`jti`/`aud` problems, or unverified identity. Fix the input (mint a fresh ID-JAG if signature/`jti`/`aud`/`exp`-related).                 |
 | `interaction_required` (401) | `/agent/identity` (ID-JAG)    | Step-up: ID-JAG matched an existing account but no `(iss, sub)` delegation yet. Body carries a `claim` block; surface it to the user (see [Step 4](#step-4--claim-ceremony)).          |

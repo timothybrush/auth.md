@@ -1,7 +1,6 @@
 import { z } from "zod";
 
 const ID_JAG = "urn:ietf:params:oauth:token-type:id-jag";
-const EMAIL_ASSERTION = "verified_email";
 
 const idJagAssertionBody = z.object({
   type: z.literal("identity_assertion"),
@@ -9,10 +8,9 @@ const idJagAssertionBody = z.object({
   assertion: z.string().min(1),
 });
 
-const emailAssertionBody = z.object({
-  type: z.literal("identity_assertion"),
-  assertion_type: z.literal(EMAIL_ASSERTION),
-  assertion: z.email(),
+const serviceAuthBody = z.object({
+  type: z.literal("service_auth"),
+  login_hint: z.email(),
 });
 
 const anonymousBody = z.object({
@@ -21,7 +19,7 @@ const anonymousBody = z.object({
 
 export const agentAuthBody = z.union([
   idJagAssertionBody,
-  emailAssertionBody,
+  serviceAuthBody,
   anonymousBody,
 ]);
 
@@ -71,7 +69,7 @@ export const revocationEndpointBody = z.object({
   token_type_hint: z.literal("access_token").optional(),
 });
 
-export const ASSERTION_TYPES = { ID_JAG, EMAIL_ASSERTION } as const;
+export const ASSERTION_TYPES = { ID_JAG } as const;
 
 export function parseBody<T>(
   schema: z.ZodType<T>,
