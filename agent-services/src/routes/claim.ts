@@ -78,6 +78,10 @@ claimRouter.get("/claim", (req, res) => {
       );
     return;
   }
+  if (hintMismatch(attempt.login_hint, user)) {
+    res.status(403).type("html").send(renderWrongAccount(attempt.login_hint!));
+    return;
+  }
 
   res.type("html").send(
     renderClaimPage({
@@ -93,17 +97,16 @@ claimRouter.get("/claim", (req, res) => {
 /*
  * Advisories surface above the form. They don't block — typing the code is
  * still the confirm action — but each one names a thing the user should
- * notice before authorizing: a login_hint that doesn't match the signed-in
- * account, the first time any agent is being linked to this account, or
- * the first time a particular provider (ID-JAG iss) is being linked.
+ * notice before authorizing: the first time any agent is being linked to
+ * this account, or the first time a particular provider (ID-JAG iss) is
+ * being linked.
  *
- * The user_code on the form is the consent gate; the advisories are the
- * "before you type, here's what's actually happening" context. Provider
- * name comes from the service's trust list, never from anything the
- * provider supplies in the ID-JAG.
+ * Wrong-account is *not* an advisory: a login_hint that doesn't match the
+ * signed-in user is a hard reject upstream of this function — the form
+ * never renders in that case. Provider name comes from the service's trust
+ * list, never from anything the provider supplies in the ID-JAG.
  */
 type Advisory =
-  | { kind: "hint_mismatch"; hintEmail: string; userEmail: string }
   | { kind: "first_time_account"; userEmail: string }
   | { kind: "first_time_provider"; providerName: string; userEmail: string };
 
@@ -112,11 +115,6 @@ function computeAdvisories(
   user: User,
 ): Advisory[] {
   const out: Advisory[] = [];
-
-  const hintEmail = registration.claim?.email;
-  if (hintEmail && hintEmail.toLowerCase() !== user.email.toLowerCase()) {
-    out.push({ kind: "hint_mismatch", hintEmail, userEmail: user.email });
-  }
 
   if (registration.kind === "id_jag" && registration.id_jag) {
     const iss = registration.id_jag.iss;
@@ -152,13 +150,29 @@ function computeAdvisories(
 
 function renderAdvisory(a: Advisory): string {
   switch (a.kind) {
-    case "hint_mismatch":
-      return `The agent hinted that this claim was for <code>${escapeHtml(a.hintEmail)}</code>, but you're signed in as <code>${escapeHtml(a.userEmail)}</code>. If you authorize now, the agent will be bound to <code>${escapeHtml(a.userEmail)}</code>.`;
     case "first_time_provider":
       return `<strong>${escapeHtml(a.providerName)}</strong> has never been linked to <code>${escapeHtml(a.userEmail)}</code> before. Authorizing here lets agents running on ${escapeHtml(a.providerName)} act on your behalf at this service in the future.`;
     case "first_time_account":
       return `This is the first agent being linked to <code>${escapeHtml(a.userEmail)}</code>.`;
   }
+}
+
+function hintMismatch(
+  hint: { kind: "email"; value: string } | undefined,
+  user: User,
+): boolean {
+  return (
+    hint?.kind === "email" &&
+    hint.value.toLowerCase() !== user.email.toLowerCase()
+  );
+}
+
+function renderWrongAccount(hint: { kind: "email"; value: string }): string {
+  return renderClaimPage({
+    status: "error",
+    title: "Wrong account",
+    message: `This claim was started for <code>${escapeHtml(hint.value)}</code>. Sign out and sign back in as that account to authorize the agent.`,
+  });
 }
 
 /*
@@ -202,6 +216,12 @@ claimRouter.post(`${config.claimEndpointPath}/complete`, (req, res) => {
             "This claim link is no longer valid. Ask the agent to start a new claim.",
         }),
       );
+    return;
+  }
+
+  const hint = registration.claim?.attempt?.login_hint;
+  if (hintMismatch(hint, user)) {
+    res.status(403).type("html").send(renderWrongAccount(hint!));
     return;
   }
 

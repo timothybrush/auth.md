@@ -4,6 +4,7 @@ import { matchOrProvision } from "../matcher.js";
 import { agentAuthBody, claimBody, parseBody } from "../schemas.js";
 import {
   type Registration,
+  classifyLoginHint,
   createAnonymousRegistration,
   createServiceAuthRegistration,
   findOrCreateIdJagRegistration,
@@ -215,16 +216,26 @@ async function handleServiceAuth(
   body: { login_hint: string },
   res: express.Response,
 ): Promise<void> {
+  const login_hint = classifyLoginHint(body.login_hint);
+  if (!login_hint) {
+    res.status(400).json({
+      error: "invalid_login_hint",
+      message:
+        "login_hint must be a recognizable identifier (e.g. an email address).",
+    });
+    return;
+  }
+
   const {
     registration,
     claimTokenPlaintext,
     claimViewTokenPlaintext,
     userCode,
     userCodeExpiresAt,
-  } = createServiceAuthRegistration({ email: body.login_hint });
+  } = createServiceAuthRegistration({ login_hint });
 
   console.log(
-    `[agent-auth] service_auth registration=${registration.id} login_hint=${body.login_hint}`,
+    `[agent-auth] service_auth registration=${registration.id} login_hint=${login_hint.value}`,
   );
 
   res.json({
@@ -279,32 +290,15 @@ agentAuthRouter.post(config.claimEndpointPath, async (req, res) => {
     return;
   }
   /*
-   * Email is immutable once bound. For service_auth it's bound at
-   * registration time (from the agent's identity claim). For anonymous
-   * it's bound on the first /claim call; subsequent re-initiations must
-   * supply the same email — otherwise an agent could redirect the
-   * ceremony from the originally-bound user to a different account,
-   * defeating the wrong-account check in /claim.
+   * Mint a fresh ceremony (new claim_attempt_token + new user_code). The
+   * login_hint is per-attempt — a re-initiation may supply a corrected
+   * email; only the current attempt's view_token and user_code work, and
+   * the /claim page surfaces the current attempt's hint as an advisory.
    */
-  if (
-    registration.claim?.email &&
-    registration.claim.email !== parsed.value.email
-  ) {
-    res.status(400).json({
-      error: "email_mismatch",
-      message:
-        "The supplied email does not match the registration's bound email.",
-    });
-    return;
-  }
-
-  /*
-   * Mint a fresh ceremony (new claim_attempt_token + new user_code). For
-   * anonymous this binds the supplied email; for service_auth it refreshes
-   * an expired user_code without changing the bound email. Any prior URL
-   * stops working.
-   */
-  const fresh = recordClaimAttempt(registration, parsed.value.email);
+  const fresh = recordClaimAttempt(registration, {
+    kind: "email",
+    value: parsed.value.email,
+  });
   const attempt = registration.claim!.attempt!;
 
   console.log(

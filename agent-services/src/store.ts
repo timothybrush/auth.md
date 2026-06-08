@@ -40,6 +40,22 @@ export type RegistrationKind = "anonymous" | "service_auth" | "id_jag";
  * the agent surfaces to the user. Naming follows RFC 8628 device
  * authorization.
  */
+/**
+ * The identifier the agent hinted at — used to surface a mismatch advisory
+ * if the signed-in user doesn't match. The wire stays a CIBA-shaped opaque
+ * string; routes call `classifyLoginHint` at the edge to tag it. Structured
+ * so adding `kind: "phone"` etc. only touches the classifier.
+ */
+export type LoginHint = { kind: "email"; value: string };
+
+const EMAIL_SHAPE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+export function classifyLoginHint(s: string): LoginHint | undefined {
+  const value = s.trim();
+  if (EMAIL_SHAPE.test(value)) return { kind: "email", value };
+  return undefined;
+}
+
 export type RegistrationClaimAttempt = {
   id: string;
   /** Hash of the claim_attempt_token embedded in the verification URL. */
@@ -49,17 +65,21 @@ export type RegistrationClaimAttempt = {
   user_code_hash: string;
   user_code_generated_at: Date;
   user_code_expires_at: Date;
+  /**
+   * The hint the agent supplied when minting this attempt. Per-attempt so a
+   * re-mint can carry a corrected hint without affecting prior attempts.
+   */
+  login_hint?: LoginHint;
 };
 
 /**
  * The agent-facing leg of the claim ceremony. The agent holds the claim
- * token; the email recipient holds the view token (inside the attempt). For
- * anonymous registrations the email/attempt aren't populated until the agent
- * initiates claim via /agent/identity/claim.
+ * token; the user-facing attempt holds the view token, the user_code, and
+ * the agent's hint. For anonymous registrations the attempt isn't populated
+ * until the agent initiates claim via /agent/identity/claim.
  */
 export type RegistrationClaim = {
   token_hash: string;
-  email?: string;
   expires_at: Date;
   attempt?: RegistrationClaimAttempt;
 };
@@ -312,7 +332,7 @@ export function createAnonymousRegistration(): {
  * and surfaces both to the user. The user signs in to the service, types the
  * code on the claim page, and ownership transfers.
  */
-export function createServiceAuthRegistration(input: { email: string }): {
+export function createServiceAuthRegistration(input: { login_hint: LoginHint }): {
   registration: Registration;
   claimTokenPlaintext: string;
   claimViewTokenPlaintext: string;
@@ -331,7 +351,6 @@ export function createServiceAuthRegistration(input: { email: string }): {
     created_at: now,
     claim: {
       token_hash: sha256Hex(claimTokenPlaintext),
-      email: input.email,
       expires_at: new Date(now.getTime() + config.anonymousTtlSeconds * 1000),
       attempt: {
         id: `cla_${randomBytes(16).toString("base64url")}`,
@@ -342,6 +361,7 @@ export function createServiceAuthRegistration(input: { email: string }): {
         user_code_hash: code.hash,
         user_code_generated_at: now,
         user_code_expires_at: code.expiresAt,
+        login_hint: input.login_hint,
       },
     },
   });
@@ -506,7 +526,7 @@ export function findRegistrationByClaimViewHash(
 
 export function recordClaimAttempt(
   registration: Registration,
-  email: string,
+  login_hint: LoginHint,
 ): {
   claimViewTokenPlaintext: string;
   userCode: string;
@@ -518,7 +538,6 @@ export function recordClaimAttempt(
   const now = new Date();
   const plaintext = `cvt_${randomBytes(24).toString("base64url")}`;
   const code = mintUserCode(now);
-  registration.claim.email = email;
   registration.claim.attempt = {
     id: `cla_${randomBytes(16).toString("base64url")}`,
     view_token_hash: sha256Hex(plaintext),
@@ -528,6 +547,7 @@ export function recordClaimAttempt(
     user_code_hash: code.hash,
     user_code_generated_at: now,
     user_code_expires_at: code.expiresAt,
+    login_hint,
   };
   return {
     claimViewTokenPlaintext: plaintext,
