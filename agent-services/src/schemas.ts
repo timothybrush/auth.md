@@ -10,7 +10,7 @@ const idJagAssertionBody = z.object({
 
 const serviceAuthBody = z.object({
   type: z.literal("service_auth"),
-  login_hint: z.email(),
+  login_hint: z.string().min(1),
 });
 
 const anonymousBody = z.object({
