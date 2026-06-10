@@ -17,7 +17,7 @@ export type Credential = {
   issued_at: Date;
   expires_at?: Date;
   revoked: boolean;
-  source: "identity_assertion" | "anonymous" | "email_verification";
+  source: "identity_assertion" | "anonymous" | "service_auth";
   iss?: string;
   sub?: string;
   aud?: string;
@@ -32,7 +32,7 @@ export type Delegation = {
   last_seen: Date;
 };
 
-export type RegistrationKind = "anonymous" | "email_verification" | "id_jag";
+export type RegistrationKind = "anonymous" | "service_auth" | "id_jag";
 
 /**
  * The user-facing leg of the claim ceremony. Tracks the `claim_attempt_token`
@@ -40,6 +40,22 @@ export type RegistrationKind = "anonymous" | "email_verification" | "id_jag";
  * the agent surfaces to the user. Naming follows RFC 8628 device
  * authorization.
  */
+/**
+ * The identifier the agent hinted at — used to surface a mismatch advisory
+ * if the signed-in user doesn't match. The wire stays a CIBA-shaped opaque
+ * string; routes call `classifyLoginHint` at the edge to tag it. Structured
+ * so adding `kind: "phone"` etc. only touches the classifier.
+ */
+export type LoginHint = { kind: "email"; value: string };
+
+const EMAIL_SHAPE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+export function classifyLoginHint(s: string): LoginHint | undefined {
+  const value = s.trim();
+  if (EMAIL_SHAPE.test(value)) return { kind: "email", value };
+  return undefined;
+}
+
 export type RegistrationClaimAttempt = {
   id: string;
   /** Hash of the claim_attempt_token embedded in the verification URL. */
@@ -49,17 +65,21 @@ export type RegistrationClaimAttempt = {
   user_code_hash: string;
   user_code_generated_at: Date;
   user_code_expires_at: Date;
+  /**
+   * The hint the agent supplied when minting this attempt. Per-attempt so a
+   * re-mint can carry a corrected hint without affecting prior attempts.
+   */
+  login_hint?: LoginHint;
 };
 
 /**
  * The agent-facing leg of the claim ceremony. The agent holds the claim
- * token; the email recipient holds the view token (inside the attempt). For
- * anonymous registrations the email/attempt aren't populated until the agent
- * initiates claim via /agent/identity/claim.
+ * token; the user-facing attempt holds the view token, the user_code, and
+ * the agent's hint. For anonymous registrations the attempt isn't populated
+ * until the agent initiates claim via /agent/identity/claim.
  */
 export type RegistrationClaim = {
   token_hash: string;
-  email?: string;
   expires_at: Date;
   attempt?: RegistrationClaimAttempt;
 };
@@ -206,7 +226,7 @@ export function issueAccessToken(input: {
   /** Optional: anonymous registrations (pre-claim) have no bound user yet. */
   userId?: string;
   scope: string[];
-  source: "identity_assertion" | "email_verification" | "anonymous";
+  source: "identity_assertion" | "service_auth" | "anonymous";
   iss?: string;
   sub?: string;
   aud?: string;
@@ -307,12 +327,12 @@ export function createAnonymousRegistration(): {
 }
 
 /**
- * Email-verification registrations bundle the claim ceremony: the agent
+ * service_auth registrations bundle the claim ceremony: the agent
  * receives a `user_code` and `verification_uri` in the registration response
  * and surfaces both to the user. The user signs in to the service, types the
  * code on the claim page, and ownership transfers.
  */
-export function createEmailVerificationRegistration(input: { email: string }): {
+export function createServiceAuthRegistration(input: { login_hint: LoginHint }): {
   registration: Registration;
   claimTokenPlaintext: string;
   claimViewTokenPlaintext: string;
@@ -327,11 +347,10 @@ export function createEmailVerificationRegistration(input: { email: string }): {
 
   const registration = new Registration({
     id: registrationId,
-    kind: "email_verification",
+    kind: "service_auth",
     created_at: now,
     claim: {
       token_hash: sha256Hex(claimTokenPlaintext),
-      email: input.email,
       expires_at: new Date(now.getTime() + config.anonymousTtlSeconds * 1000),
       attempt: {
         id: `cla_${randomBytes(16).toString("base64url")}`,
@@ -342,6 +361,7 @@ export function createEmailVerificationRegistration(input: { email: string }): {
         user_code_hash: code.hash,
         user_code_generated_at: now,
         user_code_expires_at: code.expiresAt,
+        login_hint: input.login_hint,
       },
     },
   });
@@ -369,7 +389,7 @@ function idJagRegistrationKey(iss: string, sub: string, aud: string): string {
  *    delegation or JIT-provisioned). No ceremony; mark claimed.
  *  - `{ email }` — the matcher found an account matching the ID-JAG's
  *    verified email/phone but no delegation yet. The user must confirm via
- *    the same user_code ceremony email-verification uses. Returns the
+ *    the same user_code ceremony service_auth uses. Returns the
  *    ceremony plaintexts so the route can surface them to the agent.
  *
  * On step-up retry (second presentation while a ceremony is in flight),
@@ -434,7 +454,6 @@ export function findOrCreateIdJagRegistration(input: {
   const code = mintUserCode(now);
   const claim = {
     token_hash: sha256Hex(claimTokenPlaintext),
-    email: input.context.email,
     expires_at: new Date(now.getTime() + config.anonymousTtlSeconds * 1000),
     attempt: {
       id: `cla_${randomBytes(16).toString("base64url")}`,
@@ -445,6 +464,7 @@ export function findOrCreateIdJagRegistration(input: {
       user_code_hash: code.hash,
       user_code_generated_at: now,
       user_code_expires_at: code.expiresAt,
+      login_hint: { kind: "email" as const, value: input.context.email },
     },
   };
 
@@ -506,7 +526,7 @@ export function findRegistrationByClaimViewHash(
 
 export function recordClaimAttempt(
   registration: Registration,
-  email: string,
+  login_hint: LoginHint,
 ): {
   claimViewTokenPlaintext: string;
   userCode: string;
@@ -518,7 +538,6 @@ export function recordClaimAttempt(
   const now = new Date();
   const plaintext = `cvt_${randomBytes(24).toString("base64url")}`;
   const code = mintUserCode(now);
-  registration.claim.email = email;
   registration.claim.attempt = {
     id: `cla_${randomBytes(16).toString("base64url")}`,
     view_token_hash: sha256Hex(plaintext),
@@ -528,6 +547,7 @@ export function recordClaimAttempt(
     user_code_hash: code.hash,
     user_code_generated_at: now,
     user_code_expires_at: code.expiresAt,
+    login_hint,
   };
   return {
     claimViewTokenPlaintext: plaintext,

@@ -288,8 +288,8 @@ tokenRouter.post(config.revocationEndpointPath, formParser, (req, res) => {
 });
 
 function sourceForRegistrationKind(
-  kind: "anonymous" | "email_verification" | "id_jag",
-): "anonymous" | "email_verification" | "identity_assertion" {
+  kind: "anonymous" | "service_auth" | "id_jag",
+): "anonymous" | "service_auth" | "identity_assertion" {
   if (kind === "id_jag") return "identity_assertion";
   return kind;
 }

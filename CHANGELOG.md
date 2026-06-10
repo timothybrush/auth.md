@@ -1,5 +1,30 @@
 # auth.md Changelog
 
+## v0.6.0 (2026-06-10)
+
+Splits the email-based registration path out from `identity_assertion` and into a top-level `service_auth` registration type, with a body modeled on [OIDC CIBA](https://openid.net/specs/openid-client-initiated-backchannel-authentication-core-1_0.html)'s `login_hint`. The previous shape was honest about how it worked — the service was verifying the email, not the agent — but it was filed under `identity_assertion` like the agent was asserting something. CIBA's vocabulary fits: the agent is hinting at who the user is, and the service authenticates the user out-of-band.
+
+### Added
+
+- `service_auth` registration type at `/agent/identity` — `{ "type": "service_auth", "login_hint": "<email>" }`. Returns the same ceremony shape the previous email path returned (`claim_token` + `claim` block with `user_code` and `verification_uri`); the agent polls `/oauth2/token` with the claim grant to complete.
+- `/claim` page-level advisories — confirmation prompts rendered above the `user_code` form, each naming a thing the user should notice before authorizing:
+  - `first_time_provider` — ID-JAG step-up where this `iss` has never been linked to this user before.
+  - `first_time_account` — no prior claimed registration exists for this user.
+- `service_auth_not_enabled` error code at `/agent/identity` for services that opt out of the new type.
+- `invalid_login_hint` error code at `/agent/identity` — returned when the supplied `login_hint` doesn't match a recognizable identifier shape (today: an email address).
+
+### Changed
+
+- Body shape for the email-based path: `{ "type": "identity_assertion", "assertion_type": "verified_email", "assertion": "<email>" }` → `{ "type": "service_auth", "login_hint": "<email>" }`. The body discriminator moves from a nested `assertion_type` to the top-level `type`, and the field follows CIBA's `login_hint` (untyped string — service sniffs format, leaving room for phone numbers etc. later).
+- Response `registration_type`: `"email-verification"` → `"service_auth"`.
+- Discovery: `agent_auth.identity_types_supported` now includes `"service_auth"`. `agent_auth.identity_assertion.assertion_types_supported` drops `"verified_email"` (ID-JAG only now).
+- AUTH.md Step 2 decision-tree: agents cross-check `identity_assertion.assertion_types_supported` (provider trust setup isn't trial-discoverable) but send `service_auth` and `anonymous` without consulting discovery — `identity_types_supported` is informational for those two, and opt-out is signaled by the `*_not_enabled` error.
+
+### Removed
+
+- `verified_email` assertion type. Migrated to the top-level `service_auth` registration type.
+- `verified_email_not_enabled` error code. Replaced by `service_auth_not_enabled`.
+
 ## v0.5.0 (2026-06-05)
 
 Gates first-time linking of an ID-JAG to an existing account behind a user-confirmation ceremony, and requires fresh `auth_time` on every ID-JAG. Without this confirmation gate, any trusted provider could mint an ID-JAG with `email_verified: true` for a victim's email and silently take over their account. Without the freshness gate, an agent could use a stale upstream session.

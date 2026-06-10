@@ -6,7 +6,9 @@ import {
   type Registration,
   type User,
   completeClaim,
+  delegations,
   findRegistrationByClaimViewHash,
+  registrations,
   sha256Hex,
   users,
 } from "../store.js";
@@ -76,51 +78,101 @@ claimRouter.get("/claim", (req, res) => {
       );
     return;
   }
-
-  /*
-   * Agent asserted a specific email — only that signed-in user can complete.
-   * Applies to both email_verification (email is the agent's identity claim)
-   * and anonymous (email binds the registration to the human the agent
-   * surfaced the user_code to, preventing third-party claim hijacks).
-   */
-  const wrongAccount = wrongAccountError(registration, user);
-  if (wrongAccount) {
-    res.status(403).type("html").send(wrongAccount);
+  if (hintMismatch(attempt.login_hint, user)) {
+    res.status(403).type("html").send(renderWrongAccount(attempt.login_hint!));
     return;
   }
 
   res.type("html").send(
     renderClaimPage({
       status: "form",
-      ...promptCopy(registration, user),
+      title: "Authorize this agent?",
+      message: `You're signed in as <code>${escapeHtml(user.email)}</code>. The agent should have shown you a 6-digit code — enter it below to authorize it to act on your behalf.`,
+      advisories: computeAdvisories(registration, user),
       claimAttemptToken: token,
     }),
   );
 });
 
-/**
- * Wording for the claim form. ID-JAG step-up registrations name the
- * provider being linked ("Cursor is asking to link this account…");
- * anonymous and verified-email use generic copy. Provider name comes from
- * the service's trust list, not from anywhere the provider controls
- * directly (in production this would typically resolve via CIMD with the
- * service still gating which client_name values it renders).
+/*
+ * Advisories surface above the form. They don't block — typing the code is
+ * still the confirm action — but each one names a thing the user should
+ * notice before authorizing: the first time any agent is being linked to
+ * this account, or the first time a particular provider (ID-JAG iss) is
+ * being linked.
+ *
+ * Wrong-account is *not* an advisory: a login_hint that doesn't match the
+ * signed-in user is a hard reject upstream of this function — the form
+ * never renders in that case. Provider name comes from the service's trust
+ * list, never from anything the provider supplies in the ID-JAG.
  */
-function promptCopy(
+type Advisory =
+  | { kind: "first_time_account"; userEmail: string }
+  | { kind: "first_time_provider"; providerName: string; userEmail: string };
+
+function computeAdvisories(
   registration: Registration,
   user: User,
-): { title: string; message: string } {
+): Advisory[] {
+  const out: Advisory[] = [];
+
   if (registration.kind === "id_jag" && registration.id_jag) {
-    const provider = trustedIssuerDisplayName(registration.id_jag.iss);
-    return {
-      title: `Link ${escapeHtml(provider)} to your account?`,
-      message: `You're signed in as <code>${escapeHtml(user.email)}</code>. <strong>${escapeHtml(provider)}</strong> is asking to link this account so an agent running there can act on your behalf. Enter the 6-digit code your agent showed you to confirm.`,
-    };
+    const iss = registration.id_jag.iss;
+    let providerLinked = false;
+    for (const d of delegations.values()) {
+      if (d.iss === iss && d.user_id === user.id) {
+        providerLinked = true;
+        break;
+      }
+    }
+    if (!providerLinked) {
+      out.push({
+        kind: "first_time_provider",
+        providerName: trustedIssuerDisplayName(iss),
+        userEmail: user.email,
+      });
+    }
   }
-  return {
-    title: "Confirm the code from your agent",
-    message: `You're signed in as <code>${escapeHtml(user.email)}</code>. The agent should have shown you a 6-digit code — enter it below to authorize it to act on your behalf.`,
-  };
+
+  let anyPriorClaim = false;
+  for (const r of registrations.values()) {
+    if (r.user_id === user.id && r.claimed_at && r.id !== registration.id) {
+      anyPriorClaim = true;
+      break;
+    }
+  }
+  if (!anyPriorClaim) {
+    out.push({ kind: "first_time_account", userEmail: user.email });
+  }
+
+  return out;
+}
+
+function renderAdvisory(a: Advisory): string {
+  switch (a.kind) {
+    case "first_time_provider":
+      return `<strong>${escapeHtml(a.providerName)}</strong> has never been linked to <code>${escapeHtml(a.userEmail)}</code> before. Authorizing here lets agents running on ${escapeHtml(a.providerName)} act on your behalf at this service in the future.`;
+    case "first_time_account":
+      return `This is the first agent being linked to <code>${escapeHtml(a.userEmail)}</code>.`;
+  }
+}
+
+function hintMismatch(
+  hint: { kind: "email"; value: string } | undefined,
+  user: User,
+): boolean {
+  return (
+    hint?.kind === "email" &&
+    hint.value.toLowerCase() !== user.email.toLowerCase()
+  );
+}
+
+function renderWrongAccount(hint: { kind: "email"; value: string }): string {
+  return renderClaimPage({
+    status: "error",
+    title: "Wrong account",
+    message: `This claim was started for <code>${escapeHtml(hint.value)}</code>. Sign out and sign back in as that account to authorize the agent.`,
+  });
 }
 
 /*
@@ -167,9 +219,9 @@ claimRouter.post(`${config.claimEndpointPath}/complete`, (req, res) => {
     return;
   }
 
-  const wrongAccount = wrongAccountError(registration, user);
-  if (wrongAccount) {
-    res.status(403).type("html").send(wrongAccount);
+  const hint = registration.claim?.attempt?.login_hint;
+  if (hintMismatch(hint, user)) {
+    res.status(403).type("html").send(renderWrongAccount(hint!));
     return;
   }
 
@@ -181,7 +233,9 @@ claimRouter.post(`${config.claimEndpointPath}/complete`, (req, res) => {
       .send(
         renderClaimPage({
           status: "form-error",
-          ...promptCopy(registration, user),
+          title: "Authorize this agent?",
+          message: `You're signed in as <code>${escapeHtml(user.email)}</code>. The agent should have shown you a 6-digit code — enter it below to authorize it to act on your behalf.`,
+          advisories: computeAdvisories(registration, user),
           claimAttemptToken: parsed.value.claim_attempt_token,
           error: humanError(result.error),
         }),
@@ -228,20 +282,6 @@ function returnToFor(token: string): string {
   return `/claim?claim_attempt_token=${encodeURIComponent(token)}`;
 }
 
-function wrongAccountError(
-  registration: Registration,
-  user: User,
-): string | undefined {
-  const claimEmail = registration.claim?.email;
-  if (!claimEmail) return undefined;
-  if (claimEmail.toLowerCase() === user.email.toLowerCase()) return undefined;
-  return renderClaimPage({
-    status: "error",
-    title: "Wrong account",
-    message: `This claim was started for <code>${escapeHtml(claimEmail)}</code>. You're signed in as <code>${escapeHtml(user.email)}</code>. Sign out and sign back in with the right account.`,
-  });
-}
-
 function statusForError(error: string): number {
   switch (error) {
     case "user_code_invalid":
@@ -275,11 +315,16 @@ function renderClaimPage(input: {
   status: "form" | "form-error" | "done" | "error";
   title: string;
   message: string;
+  advisories?: Advisory[];
   claimAttemptToken?: string;
   error?: string;
 }): string {
   const isError = input.status === "error";
   const headingColor = isError ? "var(--error)" : "var(--brand-primary)";
+
+  const advisoryBlock = (input.advisories ?? [])
+    .map((a) => `<div class="advisory">${renderAdvisory(a)}</div>`)
+    .join("\n");
 
   const formBlock =
     input.status === "form" || input.status === "form-error"
@@ -336,11 +381,14 @@ function renderClaimPage(input: {
   button:hover { filter: brightness(1.08); }
   .err { color: var(--error); background: rgba(229, 80, 57, .08); border: 1px solid rgba(229, 80, 57, .35); padding: .5rem .75rem; border-radius: .35rem; font-size: .85rem; margin: 0; }
   .warn { background: var(--warn-bg); border: 1px solid var(--warn-border); color: var(--warn-text); padding: .6rem .8rem; border-radius: .35rem; font-size: .8rem; margin-top: 1rem; }
+  .advisory { background: var(--warn-bg); border: 1px solid var(--warn-border); color: var(--warn-text); padding: .65rem .8rem; border-radius: .35rem; font-size: .85rem; margin: .5rem 0; }
+  .advisory + .advisory { margin-top: .4rem; }
 </style>
 </head>
 <body>
 <h1>${escapeHtml(input.title)}</h1>
 <p>${input.message}</p>
+${advisoryBlock}
 ${formBlock}
 </body></html>`;
 }

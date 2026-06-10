@@ -189,7 +189,7 @@ Content-Type: application/json
 
 <section id="step-10" class="track-email" hidden>
   <h2><span class="num">10</span>Register with an email assertion</h2>
-  <p>The agent has the user's email but no provider-signed assertion. It POSTs <code>/agent/identity</code> with <code>assertion_type: verified_email</code>. The response bundles the ceremony block (<code>user_code</code>, <code>verification_uri</code>, <code>interval</code>) — no separate <code>/claim</code> call needed.</p>
+  <p>The agent has the user's email but no provider-signed assertion. It POSTs <code>/agent/identity</code> with <code>type: service_auth</code>. The response bundles the ceremony block (<code>user_code</code>, <code>verification_uri</code>, <code>interval</code>) — no separate <code>/claim</code> call needed.</p>
   <label>User email
     <input id="email-assertion" value="alice@example.com">
   </label>
@@ -349,9 +349,8 @@ function updateAnonClaimPreview() {
 }
 function updateEmailRegisterPreview() {
   const body = {
-    type: "identity_assertion",
-    assertion_type: "verified_email",
-    assertion: document.getElementById("email-assertion").value,
+    type: "service_auth",
+    login_hint: document.getElementById("email-assertion").value,
   };
   document.querySelector("#email-register-req pre").textContent =
     "POST /agent/identity\\nContent-Type: application/json\\n\\n" + jsonStr(body);
@@ -511,9 +510,8 @@ async function anonCallPost() {
 async function emailRegister() {
   const email = document.getElementById("email-assertion").value.trim();
   const body = {
-    type: "identity_assertion",
-    assertion_type: "verified_email",
-    assertion: email,
+    type: "service_auth",
+    login_hint: email,
   };
   const r = await jsonFetch("/agent/identity", { method: "POST", body: JSON.stringify(body) });
   document.getElementById("email-register-out").innerHTML = resBlock(r.status, null, r.body, r.ok);

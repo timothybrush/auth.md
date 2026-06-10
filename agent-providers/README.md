@@ -85,11 +85,10 @@ Discovery is two-hop:
        "identity_endpoint": "https://auth.service.example.com/agent/identity",
        "claim_endpoint": "https://auth.service.example.com/agent/identity/claim",
        "events_endpoint": "https://auth.service.example.com/agent/event/notify",
-       "identity_types_supported": ["anonymous", "identity_assertion"],
+       "identity_types_supported": ["anonymous", "identity_assertion", "service_auth"],
        "identity_assertion": {
          "assertion_types_supported": [
-           "urn:ietf:params:oauth:token-type:id-jag",
-           "verified_email"
+           "urn:ietf:params:oauth:token-type:id-jag"
          ]
        },
        "events_supported": [
