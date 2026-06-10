@@ -107,7 +107,7 @@ Use this decision tree:
 2. **You have only the user's email** → [service_auth](#service_auth). Claim ceremony required.
 3. **You have neither** → [anonymous](#anonymous). Claim ceremony optional; deferred until the user wants to take ownership.
 
-For `identity_assertion`, cross-check that your assertion type is in `agent_auth.identity_assertion.assertion_types_supported` — trust setup isn't enumerable by trial, so a missing entry means stop. For `service_auth` and `anonymous`, `identity_types_supported` is informational — send the body and fall back on the `*_not_enabled` error if the service opted out.
+For `identity_assertion`, check that your assertion type is in `agent_auth.identity_assertion.assertion_types_supported`, if not listed then stop. For `service_auth` and `anonymous`, `identity_types_supported` is informational — send the body and fall back on the `*_not_enabled` error if the service opted out.
 
 ## Step 3 — Register
 
