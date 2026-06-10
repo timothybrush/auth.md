@@ -454,7 +454,6 @@ export function findOrCreateIdJagRegistration(input: {
   const code = mintUserCode(now);
   const claim = {
     token_hash: sha256Hex(claimTokenPlaintext),
-    email: input.context.email,
     expires_at: new Date(now.getTime() + config.anonymousTtlSeconds * 1000),
     attempt: {
       id: `cla_${randomBytes(16).toString("base64url")}`,
@@ -465,6 +464,7 @@ export function findOrCreateIdJagRegistration(input: {
       user_code_hash: code.hash,
       user_code_generated_at: now,
       user_code_expires_at: code.expiresAt,
+      login_hint: { kind: "email" as const, value: input.context.email },
     },
   };
 
